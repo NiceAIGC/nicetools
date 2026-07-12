@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
-import { Button, Chip, Input } from "@heroui/react";
+import { Button, Chip } from "@heroui/react";
+import { useSearch } from "../search";
 import { tools, groups, searchTools } from "../tools/registry";
 import ToolCard from "../components/ToolCard";
 
 const allGroupsKey = "全部工具";
 
 export default function Home() {
-  const [query, setQuery] = useState("");
+  const { query } = useSearch();
   const [group, setGroup] = useState<string>(groups[0] ?? allGroupsKey);
 
   const list = useMemo(() => {
@@ -27,20 +28,6 @@ export default function Home() {
           简洁好用的一站式小工具，无需登录，纯前端本地运行。
         </p>
       </header>
-
-      <div className="flex justify-center">
-        <Input
-          aria-label="搜索工具"
-          placeholder="搜索工具名称、说明、分组或分类…"
-          value={query}
-          onValueChange={setQuery}
-          isClearable
-          onClear={() => setQuery("")}
-          variant="bordered"
-          size="lg"
-          className="w-full max-w-xl"
-        />
-      </div>
 
       <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
         <aside className="min-w-0">
