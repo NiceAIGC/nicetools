@@ -96,7 +96,7 @@ export default function App() {
         </main>
 
         <footer className="mx-auto w-full max-w-6xl px-4 pb-10 pt-4 text-center text-xs text-default-400 sm:px-6">
-          NiceTools · 纯前端运行，数据仅保存在本地浏览器
+          NiceTools · 安全快捷，注重隐私保护
         </footer>
       </div>
     </SearchContext.Provider>

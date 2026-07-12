@@ -25,7 +25,7 @@ export default function Home() {
           NiceTools 在线工具集
         </h1>
         <p className="text-sm text-default-500">
-          简洁好用的一站式小工具，无需登录，纯前端本地运行。
+          简洁好用的一站式小工具，安全快捷，注重隐私保护。
         </p>
       </header>
 
