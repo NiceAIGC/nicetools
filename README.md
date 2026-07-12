@@ -22,7 +22,13 @@ pnpm dev
 pnpm build
 ```
 
-产物在 `dist/`，可部署到任意静态托管。
+产物在 `dist/`。默认构建适合部署到域名根路径，例如 `https://tools.nicecode.ai/`。
+
+如果部署到 GitHub Pages 的 `/nicetools/` 子路径，使用：
+
+```bash
+pnpm build:gh-pages
+```
 
 ## 添加新工具
 
