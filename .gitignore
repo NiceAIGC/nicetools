@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build output
+dist-ssr
+tsconfig.tsbuildinfo
+*.local
+
+# Editor / OS
+.claude
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Legacy local scratch file
+1.html
+
+# 本机代理证书信任配置，仅本地开发使用，不应提交
+.npmrc

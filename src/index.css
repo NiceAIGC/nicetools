@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@plugin "./hero.ts";
+@source "../node_modules/@heroui/react/dist";
+@source "../node_modules/@heroui/react/node_modules/@heroui/theme/dist";
+
+@custom-variant dark (&:is(.dark *));
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+}
