@@ -7,19 +7,19 @@
 - React 18 + TypeScript
 - Vite
 - HeroUI（原生组件）+ Tailwind CSS
-- React Router（HashRouter，静态托管即可深链）
+- React Router（BrowserRouter，GitHub Pages 使用 `404.html` 兜底深链）
 
 ## 本地开发
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ## 构建
 
 ```bash
-npm run build
+pnpm build
 ```
 
 产物在 `dist/`，可部署到任意静态托管。
@@ -29,9 +29,9 @@ npm run build
 所有工具通过 `src/tools/registry.ts` 注册。新增一个工具只需：
 
 1. 在 `src/tools-impl/<your-tool>/` 下实现组件（默认导出）。
-2. 在 `registry.ts` 的 `tools` 数组追加一条记录（id / 名称 / 说明 / emoji / 分类 / 懒加载组件）。
+2. 在 `registry.ts` 的 `tools` 数组追加一条记录（id / 名称 / 说明 / emoji / 分组 / 分类 / 懒加载组件）。
 
-首页搜索、分类和路由都会自动读取注册表，无需改动其它文件。工具页面路由为 `/#/tools/<id>`。
+首页搜索、分组导航和路由都会自动读取注册表，无需改动其它文件。工具页面路由为 `/tools/<id>`。
 
 ## 现有工具
 

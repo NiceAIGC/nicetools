@@ -15,6 +15,8 @@ export interface ToolMeta {
   emoji: string;
   /** 分类 */
   category: string;
+  /** 首页左侧导航分组 */
+  group: string;
   /** 搜索关键词（可选，额外命中词） */
   keywords?: string[];
   /** 懒加载的工具组件 */
@@ -29,10 +31,13 @@ export const tools: ToolMeta[] = [
       "按 TPM、时长、输入输出比例、缓存命中率和支付折扣估算 token 成本。",
     emoji: "💰",
     category: "AI 工具",
+    group: "默认分组",
     keywords: ["llm", "token", "费用", "成本", "计算器", "tpm", "cost"],
     component: lazy(() => import("../tools-impl/llm-cost")),
   },
 ];
+
+export const groups: string[] = Array.from(new Set(tools.map((t) => t.group)));
 
 export const categories: string[] = Array.from(
   new Set(tools.map((t) => t.category)),
@@ -51,6 +56,7 @@ export function searchTools(query: string): ToolMeta[] {
       t.name,
       t.description,
       t.category,
+      t.group,
       ...(t.keywords || []),
     ]
       .join(" ")
