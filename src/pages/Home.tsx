@@ -28,6 +28,20 @@ export default function Home() {
         </p>
       </header>
 
+      <div className="flex justify-center">
+        <Input
+          aria-label="搜索工具"
+          placeholder="搜索工具名称、说明、分组或分类…"
+          value={query}
+          onValueChange={setQuery}
+          isClearable
+          onClear={() => setQuery("")}
+          variant="bordered"
+          size="lg"
+          className="w-full max-w-xl"
+        />
+      </div>
+
       <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
         <aside className="min-w-0">
           <div className="flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-20 lg:flex-col lg:overflow-visible lg:pb-0">
@@ -63,25 +77,13 @@ export default function Home() {
         </aside>
 
         <div className="flex min-w-0 flex-col gap-5">
-          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
             <div className="min-w-0">
               <h2 className="text-lg font-semibold text-foreground">{group}</h2>
               <p className="text-sm text-default-500">
                 当前分组 {list.length} 个工具
               </p>
             </div>
-            <Input
-              aria-label="搜索工具"
-              placeholder="搜索工具名称、说明、分组或分类…"
-              value={query}
-              onValueChange={setQuery}
-              isClearable
-              onClear={() => setQuery("")}
-              variant="bordered"
-              size="lg"
-              startContent={<span className="text-default-400">🔍</span>}
-              className="w-full sm:max-w-md"
-            />
           </div>
 
           {list.length === 0 ? (
