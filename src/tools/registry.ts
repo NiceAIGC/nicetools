@@ -35,6 +35,26 @@ export const tools: ToolMeta[] = [
     keywords: ["llm", "token", "费用", "成本", "计算器", "tpm", "cost"],
     component: lazy(() => import("../tools-impl/llm-cost")),
   },
+  {
+    id: "json-value-extractor",
+    name: "JSON 值提取工具",
+    description: "逐行解析 JSON 对象，提取指定顶层键的值并汇总输出。",
+    emoji: "🔎",
+    category: "文本工具",
+    group: "默认分组",
+    keywords: ["json", "提取", "键名", "字段", "多行", "extract"],
+    component: lazy(() => import("../tools-impl/json-value-extractor")),
+  },
+  {
+    id: "text-delimiter",
+    name: "多行文本分隔工具",
+    description: "按自定义分隔符拆分多行文本，并按索引顺序重排、拼接。",
+    emoji: "✂️",
+    category: "文本工具",
+    group: "默认分组",
+    keywords: ["文本", "分隔", "分隔符", "索引", "重排", "split"],
+    component: lazy(() => import("../tools-impl/text-delimiter")),
+  },
 ];
 
 export const groups: string[] = Array.from(new Set(tools.map((t) => t.group)));
