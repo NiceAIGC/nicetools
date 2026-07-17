@@ -15,10 +15,8 @@ export interface ToolMeta {
   emoji: string;
   /** 分类 */
   category: string;
-  /** 首页左侧导航分组 */
-  group: string;
-  /** 搜索关键词（可选，额外命中词） */
-  keywords?: string[];
+  /** 标签，用于补充工具特征并参与搜索 */
+  tags: string[];
   /** 懒加载的工具组件 */
   component: LazyExoticComponent<ComponentType>;
 }
@@ -31,8 +29,7 @@ export const tools: ToolMeta[] = [
       "按 TPM、时长、输入输出比例、缓存命中率和支付折扣估算 token 成本。",
     emoji: "💰",
     category: "AI 工具",
-    group: "默认分组",
-    keywords: ["llm", "token", "费用", "成本", "计算器", "tpm", "cost"],
+    tags: ["LLM", "Token", "TPM", "费用估算"],
     component: lazy(() => import("../tools-impl/llm-cost")),
   },
   {
@@ -41,8 +38,7 @@ export const tools: ToolMeta[] = [
     description: "逐行解析 JSON 对象，提取指定顶层键的值并汇总输出。",
     emoji: "🔎",
     category: "文本工具",
-    group: "默认分组",
-    keywords: ["json", "提取", "键名", "字段", "多行", "extract"],
+    tags: ["JSON", "字段提取", "批量处理"],
     component: lazy(() => import("../tools-impl/json-value-extractor")),
   },
   {
@@ -51,13 +47,10 @@ export const tools: ToolMeta[] = [
     description: "按自定义分隔符拆分多行文本，并按索引顺序重排、拼接。",
     emoji: "✂️",
     category: "文本工具",
-    group: "默认分组",
-    keywords: ["文本", "分隔", "分隔符", "索引", "重排", "split"],
+    tags: ["文本分隔", "列重排", "批量处理"],
     component: lazy(() => import("../tools-impl/text-delimiter")),
   },
 ];
-
-export const groups: string[] = Array.from(new Set(tools.map((t) => t.group)));
 
 export const categories: string[] = Array.from(
   new Set(tools.map((t) => t.category)),
@@ -67,7 +60,7 @@ export function getTool(id: string): ToolMeta | undefined {
   return tools.find((t) => t.id === id);
 }
 
-// 简单的关键词过滤：命中名称/说明/分类/关键词任一即可。
+// 简单的关键词过滤：命中名称、说明、分类或标签任一即可。
 export function searchTools(query: string): ToolMeta[] {
   const q = query.trim().toLowerCase();
   if (!q) return tools;
@@ -76,8 +69,7 @@ export function searchTools(query: string): ToolMeta[] {
       t.name,
       t.description,
       t.category,
-      t.group,
-      ...(t.keywords || []),
+      ...t.tags,
     ]
       .join(" ")
       .toLowerCase();

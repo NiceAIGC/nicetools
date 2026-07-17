@@ -30,6 +30,13 @@ export default function ToolCard({ tool }: { tool: ToolMeta }) {
             {tool.description}
           </p>
         </div>
+        <div className="flex flex-wrap gap-1.5">
+          {tool.tags.map((tag) => (
+            <Chip key={tag} size="sm" variant="bordered">
+              {tag}
+            </Chip>
+          ))}
+        </div>
       </CardBody>
     </Card>
   );

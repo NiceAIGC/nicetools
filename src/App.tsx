@@ -36,7 +36,7 @@ export default function App() {
               <NavbarItem className="w-full max-w-xl">
                 <Input
                   aria-label="搜索工具"
-                  placeholder="搜索工具名称、说明、分组或分类…"
+                  placeholder="搜索工具名称、说明、分类或标签…"
                   value={query}
                   onValueChange={setQuery}
                   isClearable
@@ -68,7 +68,7 @@ export default function App() {
           <div className="border-b border-default-200 bg-background px-4 py-3 sm:hidden">
             <Input
               aria-label="搜索工具"
-              placeholder="搜索工具名称、说明、分组或分类…"
+              placeholder="搜索工具名称、说明、分类或标签…"
               value={query}
               onValueChange={setQuery}
               isClearable

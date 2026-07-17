@@ -1,22 +1,22 @@
 import { useMemo, useState } from "react";
 import { Button, Chip } from "@heroui/react";
 import { useSearch } from "../search";
-import { tools, groups, searchTools } from "../tools/registry";
+import { tools, categories, searchTools } from "../tools/registry";
 import ToolCard from "../components/ToolCard";
 
-const allGroupsKey = "全部工具";
+const allCategoriesKey = "全部工具";
 
 export default function Home() {
   const { query } = useSearch();
-  const [group, setGroup] = useState<string>(groups[0] ?? allGroupsKey);
+  const [category, setCategory] = useState(allCategoriesKey);
 
   const list = useMemo(() => {
     const byQuery = searchTools(query);
-    if (group === allGroupsKey) return byQuery;
-    return byQuery.filter((t) => t.group === group);
-  }, [query, group]);
+    if (category === allCategoriesKey) return byQuery;
+    return byQuery.filter((tool) => tool.category === category);
+  }, [query, category]);
 
-  const groupItems = groups.length > 1 ? [allGroupsKey, ...groups] : groups;
+  const categoryItems = [allCategoriesKey, ...categories];
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
@@ -32,12 +32,12 @@ export default function Home() {
       <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
         <aside className="min-w-0">
           <div className="flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-20 lg:flex-col lg:overflow-visible lg:pb-0">
-            {groupItems.map((item) => {
+            {categoryItems.map((item) => {
               const count =
-                item === allGroupsKey
+                item === allCategoriesKey
                   ? tools.length
-                  : tools.filter((tool) => tool.group === item).length;
-              const selected = group === item;
+                  : tools.filter((tool) => tool.category === item).length;
+              const selected = category === item;
               return (
                 <Button
                   key={item}
@@ -45,7 +45,7 @@ export default function Home() {
                   variant={selected ? "solid" : "light"}
                   color={selected ? "primary" : "default"}
                   className="h-10 min-w-fit justify-between px-3 lg:min-w-0"
-                  onPress={() => setGroup(item)}
+                  onPress={() => setCategory(item)}
                   endContent={
                     <Chip
                       size="sm"
@@ -66,9 +66,11 @@ export default function Home() {
         <div className="flex min-w-0 flex-col gap-5">
           <div className="min-w-0">
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-foreground">{group}</h2>
+              <h2 className="text-lg font-semibold text-foreground">
+                {category}
+              </h2>
               <p className="text-sm text-default-500">
-                当前分组 {list.length} 个工具
+                当前分类 {list.length} 个工具
               </p>
             </div>
           </div>
