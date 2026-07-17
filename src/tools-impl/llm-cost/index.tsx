@@ -93,9 +93,9 @@ export default function LlmCost() {
     setState((s) => ({ ...s, [key]: value }));
   }
 
-  // 数值字段：输入过程中允许空串，交给格式化时归一。
+  // 保留输入中的原始文本，避免 0.5 在输入到 "0." 时被立即转回 0。
   function setNumber(key: keyof CalcState, raw: string) {
-    setState((s) => ({ ...s, [key]: raw === "" ? "" : Number(raw) }));
+    setState((s) => ({ ...s, [key]: raw }));
   }
 
   // 失焦时归一化数值（对齐原实现的 change 行为）。
@@ -155,7 +155,7 @@ export default function LlmCost() {
     }
   }
 
-  const val = (v: number | "") => (v === "" ? "" : String(v));
+  const val = (v: number | string) => String(v);
 
   return (
     <div className="flex min-w-0 flex-col gap-4">

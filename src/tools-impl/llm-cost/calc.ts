@@ -3,23 +3,24 @@
 
 export type Currency = "CNY" | "USD";
 export type DurationUnit = "minute" | "hour" | "day" | "month";
+export type NumericInput = number | string;
 
 export interface CalcState {
   modelName: string;
   currency: Currency;
-  inputPrice: number | "";
-  outputPrice: number | "";
-  cacheCreatePrice: number | "";
-  cacheReadPrice: number | "";
-  tpm: number | "";
-  durationValue: number | "";
+  inputPrice: NumericInput;
+  outputPrice: NumericInput;
+  cacheCreatePrice: NumericInput;
+  cacheReadPrice: NumericInput;
+  tpm: NumericInput;
+  durationValue: NumericInput;
   durationUnit: DurationUnit;
-  monthDays: number | "";
-  inputRatio: number | "";
-  outputRatio: number | "";
-  cacheReadRate: number | "";
-  cacheCreateRate: number | "";
-  paymentRate: number | "";
+  monthDays: NumericInput;
+  inputRatio: NumericInput;
+  outputRatio: NumericInput;
+  cacheReadRate: NumericInput;
+  cacheCreateRate: NumericInput;
+  paymentRate: NumericInput;
 }
 
 export const defaults: CalcState = {
