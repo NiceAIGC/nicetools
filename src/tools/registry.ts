@@ -33,6 +33,15 @@ export const tools: ToolMeta[] = [
     component: lazy(() => import("../tools-impl/llm-cost")),
   },
   {
+    id: "prompt-cache-probe",
+    name: "Prompt 缓存探测器",
+    description: "预热固定前缀后发起并发请求，检测上游 Anthropic 兼容 API 的缓存命中情况。",
+    emoji: "🧪",
+    category: "AI 工具",
+    tags: ["Prompt Cache", "Anthropic API", "并发测试"],
+    component: lazy(() => import("../tools-impl/prompt-cache-probe")),
+  },
+  {
     id: "json-value-extractor",
     name: "JSON 值提取工具",
     description: "逐行解析 JSON 对象，提取指定顶层键的值并汇总输出。",

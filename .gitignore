@@ -10,6 +10,7 @@ pnpm-debug.log*
 node_modules
 .ignored
 .pnpm-store
+tmp
 
 # Build output
 dist-ssr

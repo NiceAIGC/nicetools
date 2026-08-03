@@ -1,6 +1,7 @@
 import { Suspense, useState } from "react";
 import { Routes, Route, Link, useLocation, useNavigate } from "react-router-dom";
 import {
+  Button,
   Input,
   Navbar,
   NavbarBrand,
@@ -22,7 +23,7 @@ export default function App() {
   return (
     <SearchContext.Provider value={{ query, setQuery }}>
       <div className="min-h-full bg-default-50">
-        <Navbar maxWidth="xl" isBordered className="bg-background">
+        <Navbar maxWidth="xl" isBordered isBlurred>
           <NavbarBrand>
             <Link to="/" className="flex items-center gap-2">
               <span className="text-2xl" aria-hidden>
@@ -43,9 +44,13 @@ export default function App() {
                   onClear={() => setQuery("")}
                   variant="bordered"
                   size="sm"
+                  startContent={
+                    <span className="text-default-400" aria-hidden>
+                      🔍
+                    </span>
+                  }
                   classNames={{
                     base: "w-full",
-                    inputWrapper: "bg-default-50",
                   }}
                 />
               </NavbarItem>
@@ -53,13 +58,14 @@ export default function App() {
           </NavbarContent>
           <NavbarContent justify="end">
             <NavbarItem>
-              <button
-                type="button"
-                onClick={() => navigate("/")}
-                className="text-sm text-default-500 transition-colors hover:text-foreground"
+              <Button
+                variant="light"
+                size="sm"
+                onPress={() => navigate("/")}
+                startContent={<span aria-hidden>🧰</span>}
               >
                 全部工具
-              </button>
+              </Button>
             </NavbarItem>
           </NavbarContent>
         </Navbar>
@@ -75,6 +81,11 @@ export default function App() {
               onClear={() => setQuery("")}
               variant="bordered"
               size="md"
+              startContent={
+                <span className="text-default-400" aria-hidden>
+                  🔍
+                </span>
+              }
             />
           </div>
         )}

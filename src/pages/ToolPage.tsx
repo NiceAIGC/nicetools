@@ -1,5 +1,5 @@
 import { useParams, Link } from "react-router-dom";
-import { Button } from "@heroui/react";
+import { BreadcrumbItem, Breadcrumbs, Chip } from "@heroui/react";
 import { getTool } from "../tools/registry";
 import NotFound from "./NotFound";
 
@@ -12,30 +12,38 @@ export default function ToolPage() {
   const Component = tool.component;
 
   return (
-    <div className="flex min-w-0 flex-col gap-5">
-      <div className="flex flex-col gap-3">
-        <Button
-          as={Link}
-          to="/"
-          variant="light"
-          size="sm"
-          className="w-fit px-2 text-default-500"
-          startContent={<span aria-hidden>←</span>}
-        >
-          返回工具集
-        </Button>
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="shrink-0 text-3xl" aria-hidden>
-            {tool.emoji}
-          </span>
-          <div className="min-w-0">
-            <h1 className="text-xl font-bold text-foreground sm:text-2xl">
-              {tool.name}
-            </h1>
-            <p className="mt-0.5 max-w-full break-all text-sm text-default-500 sm:break-words">
-              {tool.description}
-            </p>
+    <div className="flex min-w-0 flex-col gap-6">
+      <div className="flex flex-col gap-4">
+        <Breadcrumbs size="sm" variant="light">
+          <BreadcrumbItem as={Link} to="/">
+            全部工具
+          </BreadcrumbItem>
+          <BreadcrumbItem>{tool.category}</BreadcrumbItem>
+          <BreadcrumbItem>{tool.name}</BreadcrumbItem>
+        </Breadcrumbs>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-large bg-primary-50 text-3xl">
+              <span aria-hidden>{tool.emoji}</span>
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-2xl font-bold text-foreground">{tool.name}</h1>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-default-500">
+                {tool.description}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {tool.tags.map((tag) => (
+                  <Chip key={tag} size="sm" variant="bordered">
+                    {tag}
+                  </Chip>
+                ))}
+              </div>
+            </div>
           </div>
+          <Chip color="primary" variant="flat" className="w-fit shrink-0">
+            {tool.category}
+          </Chip>
         </div>
       </div>
 

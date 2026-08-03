@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Accordion,
+  AccordionItem,
+  Alert,
   Card,
   CardHeader,
   CardBody,
@@ -16,6 +19,7 @@ import {
   TableRow,
   TableCell,
 } from "@heroui/react";
+import { copyText } from "../../utils/copyText";
 import {
   type CalcState,
   type Currency,
@@ -111,31 +115,9 @@ export default function LlmCost() {
     });
   }
 
-  function copyResult() {
-    const text = resultText(state);
-    const done = () => setStatus("结果已复制");
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-    } else {
-      fallbackCopy(text, done);
-    }
-  }
-
-  function fallbackCopy(text: string, done: () => void) {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand("copy");
-      done();
-    } catch {
-      setStatus("复制失败");
-    }
-    document.body.removeChild(textarea);
+  async function copyResult() {
+    const copied = await copyText(resultText(state));
+    setStatus(copied ? "结果已复制" : "复制失败");
   }
 
   function resetDefault() {
@@ -159,18 +141,20 @@ export default function LlmCost() {
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <div className="flex justify-end">
-        <Chip variant="flat" color="default" size="sm">
-          {status}
-        </Chip>
-      </div>
-
       <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
         {/* 左列：输入 */}
         <div className="flex min-w-0 flex-col gap-4">
           {/* 模型价格 */}
           <Card shadow="sm" className="min-w-0 border border-default-200">
-            <CardHeader className="text-base font-semibold">模型价格</CardHeader>
+            <CardHeader className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-semibold text-foreground">模型价格</p>
+                <p className="text-xs text-default-500">设置每百万 token 的计费单价</p>
+              </div>
+              <Chip variant="flat" color="default" size="sm" aria-live="polite">
+                {status}
+              </Chip>
+            </CardHeader>
             <CardBody className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
               <Input
                 label="模型名称"
@@ -230,7 +214,12 @@ export default function LlmCost() {
 
           {/* 用量设置 */}
           <Card shadow="sm" className="min-w-0 border border-default-200">
-            <CardHeader className="text-base font-semibold">用量设置</CardHeader>
+            <CardHeader>
+              <div>
+                <p className="font-semibold text-foreground">用量设置</p>
+                <p className="text-xs text-default-500">设置吞吐量、时长、缓存命中率和折扣</p>
+              </div>
+            </CardHeader>
             <CardBody className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
               <NumInput
                 label="总 TPM"
@@ -322,12 +311,14 @@ export default function LlmCost() {
                 step="0.01"
               />
 
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm text-foreground">普通输入率</span>
-                <div className="flex h-10 items-center rounded-medium border-2 border-default-200 bg-default-100 px-3 text-sm font-medium text-default-600">
-                  {formatPercent(result.normalInputRate)}
-                </div>
-              </div>
+              <Input
+                label="普通输入率"
+                labelPlacement="outside"
+                value={formatPercent(result.normalInputRate)}
+                isReadOnly
+                variant="flat"
+                description="由 100% - 缓存读取率 - 缓存创建率自动计算"
+              />
 
               <div className="flex flex-col gap-1.5">
                 <span className="text-sm text-foreground">实际支付比例</span>
@@ -374,17 +365,26 @@ export default function LlmCost() {
               </div>
 
               {result.rateOverflow && (
-                <div className="rounded-medium border border-warning-200 bg-warning-50 px-3 py-2 text-sm font-medium text-warning-700 sm:col-span-2">
-                  缓存读取率和缓存创建率合计超过 100%，普通输入率已按 0% 计算。
-                </div>
+                <Alert
+                  color="warning"
+                  variant="flat"
+                  title="缓存比例超过 100%"
+                  description="普通输入率已按 0% 计算，缓存读取与创建 token 会按比例缩放。"
+                  className="sm:col-span-2"
+                />
               )}
             </CardBody>
           </Card>
         </div>
 
         {/* 右列：结果 */}
-        <Card shadow="sm" className="min-w-0 border border-default-200 lg:sticky lg:top-4 lg:self-start">
-          <CardHeader className="text-base font-semibold">计算结果</CardHeader>
+        <Card shadow="sm" className="min-w-0 border border-default-200 lg:sticky lg:top-20 lg:self-start">
+          <CardHeader>
+            <div>
+              <p className="font-semibold text-foreground">计算结果</p>
+              <p className="text-xs text-default-500">根据当前设置实时更新</p>
+            </div>
+          </CardHeader>
           <CardBody className="min-w-0 gap-4">
             {/* 指标卡 */}
             <div className="grid min-w-0 grid-cols-2 gap-3">
@@ -393,7 +393,6 @@ export default function LlmCost() {
                 label="折后实际消耗"
                 value={money(result.actualTotalCost)}
               />
-              <Metric label="折前总费用" value={money(result.totalCost)} />
               <Metric label="每月实际" value={money(result.actualMonthlyCost)} />
               <Metric label="每日实际" value={money(result.actualDailyCost)} />
               <Metric label="每小时实际" value={money(result.actualHourlyCost)} />
@@ -402,6 +401,7 @@ export default function LlmCost() {
 
             {/* 关键指标行 */}
             <div className="min-w-0 overflow-hidden rounded-medium border border-default-200">
+              <InfoRow label="折前总费用" value={money(result.totalCost)} />
               <InfoRow
                 label="实际 TPM"
                 value={`${formatNumber(result.tpm, 0)} token / 分钟`}
@@ -494,7 +494,7 @@ export default function LlmCost() {
               </TableBody>
             </Table>
           </CardBody>
-          <CardFooter className="flex flex-wrap gap-2">
+          <CardFooter className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Button color="primary" onPress={copyResult}>
               复制结果
             </Button>
@@ -508,13 +508,21 @@ export default function LlmCost() {
         </Card>
       </div>
 
-      <Card shadow="sm" className="min-w-0 border border-default-200">
-        <CardHeader className="text-base font-semibold">基础说明</CardHeader>
-        <CardBody className="gap-3 text-sm leading-6 text-default-600">
-          <p>
-            本工具用于做成本估算，核心结果都由你填写的价格、用量和比例计算得出，不代表模型厂商后台的实时账单。
-          </p>
-          <ul className="list-disc space-y-2 pl-5">
+      <Accordion variant="bordered">
+        <AccordionItem
+          key="guide"
+          aria-label="计算口径与基础说明"
+          title="计算口径与基础说明"
+          subtitle="了解 TPM、输入输出比例、缓存和支付折扣的计算方式"
+        >
+          <div className="flex flex-col gap-4 pb-2 text-sm leading-6 text-default-600">
+            <Alert
+              color="primary"
+              variant="flat"
+              title="估算结果说明"
+              description="结果由你填写的价格、用量和比例计算得出，不代表模型厂商后台的实时账单。"
+            />
+            <ul className="list-disc space-y-2 pl-5">
             <li>
               <span className="font-semibold text-foreground">TPM</span>
               ：Token Per Minute，每分钟处理的 token 数。本工具里的“总
@@ -561,9 +569,10 @@ export default function LlmCost() {
               ：用于模拟商务折扣、代金券或渠道折扣。45% 等于 4.5
               折，折后实际消耗 = 折前费用 x 实际支付比例。
             </li>
-          </ul>
-        </CardBody>
-      </Card>
+            </ul>
+          </div>
+        </AccordionItem>
+      </Accordion>
     </div>
   );
 }
@@ -639,24 +648,23 @@ function Metric({
   primary?: boolean;
 }) {
   return (
-    <div
-      className={
-        primary
-          ? "col-span-2 rounded-large border border-primary-200 bg-primary-50 p-4"
-          : "rounded-large border border-default-200 bg-default-50 p-4"
-      }
+    <Card
+      shadow="none"
+      className={primary ? "col-span-2 border border-primary-200" : "border border-default-200"}
     >
-      <span className="block text-xs font-medium text-default-500">{label}</span>
-      <span
-        className={
-          primary
-            ? "mt-1 block break-words text-3xl font-extrabold text-primary sm:text-4xl"
-            : "mt-1 block break-words text-xl font-bold text-foreground"
-        }
-      >
-        {value}
-      </span>
-    </div>
+      <CardBody className={primary ? "gap-1 bg-primary-50 p-4" : "gap-1 p-4"}>
+        <span className="text-xs font-medium text-default-500">{label}</span>
+        <span
+          className={
+            primary
+              ? "break-words text-3xl font-extrabold text-primary sm:text-4xl"
+              : "break-words text-xl font-bold text-foreground"
+          }
+        >
+          {value}
+        </span>
+      </CardBody>
+    </Card>
   );
 }
 
