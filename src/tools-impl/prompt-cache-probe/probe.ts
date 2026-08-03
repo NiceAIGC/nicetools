@@ -1,4 +1,7 @@
+export type ApiFormat = "anthropic" | "openai";
+
 export interface ProbeConfig {
+  apiFormat: ApiFormat;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -21,14 +24,21 @@ export interface RoundResult {
   results: RequestResult[];
 }
 
-export function buildUrl(baseUrl: string): string {
+export function buildUrl(baseUrl: string, apiFormat: ApiFormat): string {
   const base = baseUrl.trim().replace(/\/+$/, "");
-  if (base.endsWith("/v1/messages")) return base;
-  if (base.endsWith("/v1")) return `${base}/messages`;
-  return `${base}/v1/messages`;
+  const endpoint = apiFormat === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
+  if (base.endsWith(endpoint)) return base;
+  if (base.endsWith("/v1")) return `${base}${endpoint.slice(3)}`;
+  return `${base}${endpoint}`;
 }
 
-export function buildSystem(tag: string) {
+export interface AnthropicSystemBlock {
+  type: "text";
+  text: string;
+  cache_control: { type: "ephemeral" };
+}
+
+export function buildSystem(tag: string): AnthropicSystemBlock[] {
   const paragraph =
     "固定政策段落 {n}：审批、风控、法务、客服、运营、研发和财务都使用同一套企业知识库口径；处理任何请求时，先确认固定规则，再基于本轮短问题给出简洁回答。\n";
   const body =
@@ -42,9 +52,10 @@ export function buildSystem(tag: string) {
 
 export async function sendRequest(
   url: string,
+  apiFormat: ApiFormat,
   apiKey: string,
   model: string,
-  system: ReturnType<typeof buildSystem>,
+  system: AnthropicSystemBlock[],
   question: string,
   timeoutSeconds: number,
 ): Promise<RequestResult> {
@@ -57,17 +68,30 @@ export async function sendRequest(
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
+        ...(apiFormat === "anthropic"
+          ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+          : {}),
         Authorization: `Bearer ${apiKey}`,
-        "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model,
-        system,
-        max_tokens: 16,
-        stream: false,
-        messages: [{ role: "user", content: question }],
-      }),
+      body: JSON.stringify(
+        apiFormat === "anthropic"
+          ? {
+              model,
+              system,
+              max_tokens: 16,
+              stream: false,
+              messages: [{ role: "user", content: question }],
+            }
+          : {
+              model,
+              max_tokens: 16,
+              stream: false,
+              messages: [
+                { role: "system", content: system[0].text },
+                { role: "user", content: question },
+              ],
+            },
+      ),
     });
 
     const body = await response.text();
@@ -75,11 +99,15 @@ export async function sendRequest(
       return { ok: false, read: 0, write: 0, error: `HTTP ${response.status}: ${body.slice(0, 120)}` };
     }
 
-    const usage = (JSON.parse(body) as { usage?: Record<string, unknown> }).usage ?? {};
+    const parsed: unknown = JSON.parse(body);
+    const usage = getRecordProperty(parsed, "usage");
+    const promptDetails = getRecordProperty(usage, "prompt_tokens_details");
     return {
       ok: true,
-      read: Number(usage.cache_read_input_tokens) || 0,
-      write: Number(usage.cache_creation_input_tokens) || 0,
+      read: apiFormat === "anthropic"
+        ? numericProperty(usage, "cache_read_input_tokens")
+        : numericProperty(promptDetails, "cached_tokens"),
+      write: apiFormat === "anthropic" ? numericProperty(usage, "cache_creation_input_tokens") : 0,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -92,6 +120,18 @@ export async function sendRequest(
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function getRecordProperty(value: unknown, key: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || !(key in value)) return {};
+
+  const record = value as Record<string, unknown>;
+  const property = record[key];
+  return property && typeof property === "object" ? property as Record<string, unknown> : {};
+}
+
+function numericProperty(value: Record<string, unknown>, key: string): number {
+  return Number(value[key]) || 0;
 }
 
 export function delay(milliseconds: number): Promise<void> {

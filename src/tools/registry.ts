@@ -35,10 +35,10 @@ export const tools: ToolMeta[] = [
   {
     id: "prompt-cache-probe",
     name: "Prompt 缓存探测器",
-    description: "预热固定前缀后发起并发请求，检测上游 Anthropic 兼容 API 的缓存命中情况。",
+    description: "预热固定前缀后发起并发请求，检测上游 API 的缓存命中情况。",
     emoji: "🧪",
     category: "AI 工具",
-    tags: ["Prompt Cache", "Anthropic API", "并发测试"],
+    tags: ["Prompt Cache", "并发测试"],
     component: lazy(() => import("../tools-impl/prompt-cache-probe")),
   },
   {

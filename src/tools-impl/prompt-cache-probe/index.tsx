@@ -11,6 +11,8 @@ import {
   Chip,
   Input,
   Progress,
+  Select,
+  SelectItem,
 } from "@heroui/react";
 import {
   buildSystem,
@@ -22,8 +24,9 @@ import {
 } from "./probe";
 
 const defaults: ProbeConfig = {
+  apiFormat: "anthropic",
   apiKey: "",
-  baseUrl: "https://weimeta.ai/",
+  baseUrl: "",
   model: "claude-opus-4-7",
   rounds: 5,
   waitSeconds: 3,
@@ -80,7 +83,7 @@ export default function PromptCacheProbe() {
       concurrency: Math.min(50, Math.floor(asPositiveNumber(String(config.concurrency), defaults.concurrency))),
       timeoutSeconds: asPositiveNumber(String(config.timeoutSeconds), defaults.timeoutSeconds),
     };
-    const url = buildUrl(normalized.baseUrl);
+    const url = buildUrl(normalized.baseUrl, normalized.apiFormat);
     setConfig(normalized);
     setRounds([]);
     setError("");
@@ -92,6 +95,7 @@ export default function PromptCacheProbe() {
         const system = buildSystem(`r${Date.now()}-${index}`);
         const warmup = await sendRequest(
           url,
+          normalized.apiFormat,
           normalized.apiKey,
           normalized.model,
           system,
@@ -109,6 +113,7 @@ export default function PromptCacheProbe() {
           Array.from({ length: normalized.concurrency }, (_, requestIndex) =>
             sendRequest(
               url,
+              normalized.apiFormat,
               normalized.apiKey,
               normalized.model,
               system,
@@ -142,9 +147,13 @@ export default function PromptCacheProbe() {
             </Chip>
           </CardHeader>
           <CardBody className="gap-4">
+            <Select label="API 格式" labelPlacement="outside" selectedKeys={[config.apiFormat]} onSelectionChange={(keys) => update("apiFormat", Array.from(keys)[0] as ProbeConfig["apiFormat"])} variant="bordered">
+              <SelectItem key="anthropic">Anthropic Messages API</SelectItem>
+              <SelectItem key="openai">OpenAI Chat Completions API</SelectItem>
+            </Select>
             <Input label="API Key" labelPlacement="outside" type="password" autoComplete="off" value={config.apiKey} onValueChange={(value) => update("apiKey", value)} variant="bordered" />
-            <Input label="上游 API 地址" labelPlacement="outside" description="自动补全为 /v1/messages" value={config.baseUrl} onValueChange={(value) => update("baseUrl", value)} variant="bordered" />
-            <Input label="模型" labelPlacement="outside" value={config.model} onValueChange={(value) => update("model", value)} variant="bordered" />
+            <Input label="上游 API 地址" labelPlacement="outside" placeholder="https://xxxxxx.com" description={config.apiFormat === "anthropic" ? "自动补全为 /v1/messages" : "自动补全为 /v1/chat/completions"} value={config.baseUrl} onValueChange={(value) => update("baseUrl", value)} variant="bordered" />
+            <Input label="模型" labelPlacement="outside" placeholder="例如：claude-opus-4-7 或 gpt-4o" value={config.model} onValueChange={(value) => update("model", value)} variant="bordered" />
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Input label="轮数" labelPlacement="outside" type="number" min={1} value={String(config.rounds)} onValueChange={(value) => update("rounds", asPositiveNumber(value, defaults.rounds))} variant="bordered" />
               <Input label="等待秒数" labelPlacement="outside" type="number" min={0} step="0.5" value={String(config.waitSeconds)} onValueChange={(value) => update("waitSeconds", Math.max(0, Number(value) || 0))} variant="bordered" />
@@ -192,8 +201,8 @@ export default function PromptCacheProbe() {
       <Accordion variant="bordered">
         <AccordionItem key="guide" aria-label="使用说明" title="测试说明与隐私提示" subtitle="固定前缀预热后，观察并发请求的缓存复用情况">
           <div className="flex flex-col gap-3 pb-2 text-sm leading-6 text-default-600">
-            <p>每轮都会生成一个新的固定 system 前缀，先发送一次预热请求，等待指定时间后再并发发送请求。响应中的 <code>cache_read_input_tokens</code> 大于 0 即视为命中。</p>
-            <p>低命中率或轮次间明显波动，通常表示上游请求被分配到未共享缓存的后端。该结论仅针对本次测试样本。</p>
+            <p>每轮都会生成一个新的固定 system 前缀，先发送一次预热请求，等待指定时间后再并发发送请求。Anthropic 格式以 <code>cache_read_input_tokens</code>、OpenAI 格式以 <code>prompt_tokens_details.cached_tokens</code> 大于 0 视为命中。</p>
+            <p>OpenAI 格式不统一返回缓存写入 token，因此“重新写入”仅表示未报告缓存命中。</p>
             <Alert color="warning" variant="flat" title="浏览器直连限制">API Key 只保留在当前页面内存中，不会发送到本站服务器；但上游必须允许本站域名的 CORS 请求，否则浏览器会拦截请求。</Alert>
           </div>
         </AccordionItem>
