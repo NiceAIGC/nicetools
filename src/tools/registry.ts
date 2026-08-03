@@ -23,6 +23,15 @@ export interface ToolMeta {
 
 export const tools: ToolMeta[] = [
   {
+    id: "alarm-clock",
+    name: "在线闹钟",
+    description: "在浏览器中创建多个闹钟，支持重复提醒、贪睡和声音通知。",
+    emoji: "⏰",
+    category: "生活工具",
+    tags: ["闹钟", "提醒", "贪睡", "本地存储"],
+    component: lazy(() => import("../tools-impl/alarm-clock")),
+  },
+  {
     id: "llm-cost",
     name: "大模型费用计算器",
     description:
