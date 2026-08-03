@@ -188,6 +188,21 @@ export default function AlarmClock() {
     setDays([]);
   }
 
+  function addRelativeAlarm(minutes: number) {
+    const target = new Date(Date.now() + minutes * 60_000);
+    const targetTime = target.toTimeString().slice(0, 5);
+    setAlarms((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        time: targetTime,
+        label: `${minutes} 分钟后提醒`,
+        enabled: true,
+        days: [],
+      },
+    ]);
+  }
+
   function updateAlarm(id: string, update: Partial<Alarm>) {
     setAlarms((current) => current.map((alarm) => (alarm.id === id ? { ...alarm, ...update } : alarm)));
   }
@@ -229,6 +244,14 @@ export default function AlarmClock() {
             <Input aria-label="闹钟时间" type="time" value={time} onValueChange={setTime} />
             <Input aria-label="闹钟备注" label="备注（可选）" placeholder="例如：起床、开会" value={label} onValueChange={setLabel} />
             <Button color="primary" onPress={addAlarm}>添加闹钟</Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-default-500">快捷添加</span>
+            {[15, 30, 60, 120].map((minutes) => (
+              <Button key={minutes} size="sm" variant="flat" onPress={() => addRelativeAlarm(minutes)}>
+                {minutes < 60 ? `${minutes} 分钟后` : `${minutes / 60} 小时后`}
+              </Button>
+            ))}
           </div>
           <div className="flex flex-wrap gap-2">
             {weekdays.map((day, index) => (
