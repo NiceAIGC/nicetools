@@ -1,9 +1,10 @@
-import { useParams, Link } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { BreadcrumbItem, Breadcrumbs, Chip } from "@heroui/react";
 import { getTool } from "../tools/registry";
 import NotFound from "./NotFound";
 
 export default function ToolPage() {
+  const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const tool = id ? getTool(id) : undefined;
 
@@ -15,10 +16,12 @@ export default function ToolPage() {
     <div className="flex min-w-0 flex-col gap-6">
       <div className="flex flex-col gap-4">
         <Breadcrumbs size="sm" variant="light">
-          <BreadcrumbItem as={Link} to="/">
+          <BreadcrumbItem onPress={() => navigate("/")}>
             全部工具
           </BreadcrumbItem>
-          <BreadcrumbItem>{tool.category}</BreadcrumbItem>
+          <BreadcrumbItem onPress={() => navigate(`/?category=${encodeURIComponent(tool.category)}`)}>
+            {tool.category}
+          </BreadcrumbItem>
           <BreadcrumbItem>{tool.name}</BreadcrumbItem>
         </Breadcrumbs>
 

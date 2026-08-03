@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Card, CardBody, Chip, Tab, Tabs } from "@heroui/react";
+import { useSearchParams } from "react-router-dom";
 import { useSearch } from "../search";
 import { tools, categories, searchTools } from "../tools/registry";
 import ToolCard from "../components/ToolCard";
@@ -8,8 +9,8 @@ const allCategoriesKey = "全部工具";
 
 export default function Home() {
   const { query } = useSearch();
-  const [category, setCategory] = useState(allCategoriesKey);
-
+  const [searchParams, setSearchParams] = useSearchParams();
+  const category = searchParams.get("category") ?? allCategoriesKey;
   const list = useMemo(() => {
     const byQuery = searchTools(query);
     if (category === allCategoriesKey) return byQuery;
@@ -37,7 +38,10 @@ export default function Home() {
       <Tabs
         aria-label="工具分类"
         selectedKey={category}
-        onSelectionChange={(key) => setCategory(String(key))}
+        onSelectionChange={(key) => {
+          const nextCategory = String(key);
+          setSearchParams(nextCategory === allCategoriesKey ? {} : { category: nextCategory });
+        }}
         variant="underlined"
         color="primary"
         classNames={{ tabList: "gap-4", cursor: "w-full" }}
