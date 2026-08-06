@@ -9,6 +9,8 @@ import {
   Divider,
   Input,
   Progress,
+  Select,
+  SelectItem,
   Switch,
 } from "@heroui/react";
 
@@ -24,6 +26,9 @@ type Alarm = {
 
 const storageKey = "nicetools.alarms";
 const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+
+const hours = Array.from({ length: 24 }, (_, value) => String(value).padStart(2, "0"));
+const minutes = Array.from({ length: 60 }, (_, value) => String(value).padStart(2, "0"));
 
 function loadAlarms(): Alarm[] {
   try {
@@ -70,6 +75,7 @@ export default function AlarmClock() {
   const [days, setDays] = useState<number[]>([]);
   const [ringing, setRinging] = useState<Alarm>();
   const [audioReady, setAudioReady] = useState(false);
+  const [audioStatus, setAudioStatus] = useState("请先授权声音，闹钟才能播放提示音。");
   const audioContext = useRef<AudioContext>();
   const beepTimer = useRef<number>();
   const alarmsRef = useRef(alarms);
@@ -86,22 +92,23 @@ export default function AlarmClock() {
 
   function beep() {
     const context = audioContext.current;
-    if (!context || context.state !== "running") return;
+    if (!context || context.state !== "running") return false;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.frequency.value = 880;
     gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.28);
+    gain.gain.exponentialRampToValueAtTime(0.2, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.3);
     oscillator.connect(gain).connect(context.destination);
     oscillator.start();
-    oscillator.stop(context.currentTime + 0.3);
+    oscillator.stop(context.currentTime + 0.32);
+    return true;
   }
 
   function startRinging(alarm: Alarm) {
     if (ringingRef.current) return;
     setRinging(alarm);
-    beep();
+    if (!beep()) setAudioStatus("闹钟已触发，但声音未授权；点击“授权闹钟声音”后可播放。");
     beepTimer.current = window.setInterval(beep, 850);
     if ("Notification" in window && Notification.permission === "granted") {
       new Notification(alarm.label || "闹钟提醒", { body: `${alarm.time} 时间到了` });
@@ -142,13 +149,24 @@ export default function AlarmClock() {
   }
 
   async function enableAudio() {
-    const Context = window.AudioContext;
-    if (!Context) return;
-    audioContext.current ??= new Context();
-    await audioContext.current.resume();
-    setAudioReady(audioContext.current.state === "running");
-    if ("Notification" in window && Notification.permission === "default") {
-      await Notification.requestPermission();
+    const Context = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Context) {
+      setAudioStatus("当前浏览器不支持闹钟声音。");
+      return;
+    }
+    try {
+      audioContext.current ??= new Context();
+      await audioContext.current.resume();
+      const ready = audioContext.current.state === "running";
+      setAudioReady(ready);
+      setAudioStatus(ready ? "声音已授权，已播放试听提示音。" : "浏览器阻止了声音播放，请再次点击授权。");
+      if (ready) beep();
+      if ("Notification" in window && Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+    } catch {
+      setAudioReady(false);
+      setAudioStatus("声音授权失败，请检查浏览器的自动播放权限。");
     }
   }
 
@@ -221,9 +239,12 @@ export default function AlarmClock() {
               <p className="text-sm text-default-500">设备本地时间</p>
               <p className="text-4xl font-semibold tabular-nums tracking-tight text-foreground sm:text-5xl">{formatTime(now)}</p>
             </div>
-            <Button color={audioReady ? "success" : "primary"} variant={audioReady ? "flat" : "solid"} onPress={enableAudio}>
-              {audioReady ? "声音已授权" : "授权闹钟声音"}
-            </Button>
+            <div className="flex flex-col items-start gap-1 sm:items-end">
+              <Button color={audioReady ? "success" : "primary"} variant={audioReady ? "flat" : "solid"} onPress={enableAudio}>
+                {audioReady ? "声音已授权 · 点击试听" : "授权闹钟声音"}
+              </Button>
+              <p className="text-xs text-default-500">{audioStatus}</p>
+            </div>
           </div>
           <Divider />
           <div className="rounded-large bg-primary-50 p-4 text-primary-700 dark:text-primary-300">
@@ -240,8 +261,19 @@ export default function AlarmClock() {
       <Card shadow="sm" className="border border-default-200">
         <CardHeader className="pb-0"><h2 className="text-lg font-semibold">添加闹钟</h2></CardHeader>
         <CardBody className="gap-4">
-          <div className="grid gap-3 sm:grid-cols-[150px_1fr_auto]">
-            <Input aria-label="闹钟时间" type="time" value={time} onValueChange={setTime} />
+          <div className="grid gap-3 sm:grid-cols-[150px_150px_1fr_auto]">
+            <Select aria-label="小时" label="时间" selectedKeys={[time.slice(0, 2)]} onSelectionChange={(keys) => {
+              const hour = [...keys][0];
+              if (typeof hour === "string") setTime(`${hour}:${time.slice(3, 5)}`);
+            }}>
+              {hours.map((hour) => <SelectItem key={hour}>{hour} 时</SelectItem>)}
+            </Select>
+            <Select aria-label="分钟" label="分钟" selectedKeys={[time.slice(3, 5)]} onSelectionChange={(keys) => {
+              const minute = [...keys][0];
+              if (typeof minute === "string") setTime(`${time.slice(0, 2)}:${minute}`);
+            }}>
+              {minutes.map((minute) => <SelectItem key={minute}>{minute} 分</SelectItem>)}
+            </Select>
             <Input aria-label="闹钟备注" label="备注（可选）" placeholder="例如：起床、开会" value={label} onValueChange={setLabel} />
             <Button color="primary" onPress={addAlarm}>添加闹钟</Button>
           </div>
