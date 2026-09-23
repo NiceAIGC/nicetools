@@ -48,9 +48,9 @@ import {
 
 type ResultTab = "text" | "raw" | "request";
 
-const formatOptions: { key: ApiFormat; label: string; hint: string }[] = [
-  { key: "openai", label: "OpenAI 格式", hint: "/chat/completions + Bearer" },
-  { key: "anthropic", label: "Claude 格式", hint: "/messages + x-api-key" },
+const formatOptions: { key: ApiFormat; label: string }[] = [
+  { key: "openai", label: "OpenAI 格式" },
+  { key: "anthropic", label: "Claude 格式" },
 ];
 
 function createId(): string {
@@ -256,28 +256,32 @@ export default function LlmConnectivity() {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <Card shadow="sm" className="min-w-0 border border-default-200">
-        <CardHeader className="flex flex-col items-start gap-3 pb-0">
-          <Tabs
-            aria-label="接口格式"
-            variant="bordered"
-            selectedKey={config.format}
-            onSelectionChange={(key) => changeFormat(key as ApiFormat)}
-          >
-            {formatOptions.map((option) => (
-              <Tab
-                key={option.key}
-                title={
-                  <div className="flex flex-col items-start">
-                    <span>{option.label}</span>
-                    <span className="text-tiny text-default-400">{option.hint}</span>
-                  </div>
-                }
-              />
-            ))}
-          </Tabs>
-        </CardHeader>
-
         <CardBody className="gap-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <Tabs
+              aria-label="接口格式"
+              variant="solid"
+              color="primary"
+              size="md"
+              classNames={{ panel: "hidden" }}
+              selectedKey={config.format}
+              onSelectionChange={(key) => changeFormat(key as ApiFormat)}
+            >
+              {/* 仅作为格式切换器，内容全部在下方表单里，隐藏 Tabs 自带的空面板 */}
+              {formatOptions.map((option) => (
+                <Tab key={option.key} title={option.label} />
+              ))}
+            </Tabs>
+            <div className="flex flex-wrap items-center gap-2">
+              <Chip size="sm" variant="flat">
+                {config.format === "openai" ? "POST /chat/completions" : "POST /messages"}
+              </Chip>
+              <Chip size="sm" variant="flat">
+                {config.format === "openai" ? "Authorization: Bearer" : "x-api-key + anthropic-version"}
+              </Chip>
+            </div>
+          </div>
+
           <Select
             aria-label="参考配置"
             label="参考配置"
