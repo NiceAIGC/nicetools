@@ -1,6 +1,6 @@
 // 批量打包下载：移植自源项目 downloadAll() 的分片、进度、ETA 与取消逻辑，
 // 压缩部分改用 JSZip（原项目同样是 JSZip，仅由 CDN 改为本地依赖）。
-import JSZip from "jszip";
+// JSZip 体积不小且只有点「下载全部」时才用得到，这里按需动态引入。
 import { canvasToBlob, generateZipName } from "./watermark";
 
 export interface ZipSource {
@@ -52,14 +52,20 @@ export async function downloadZip(
   const total = sources.length;
   if (total === 0) return;
 
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DownloadCancelledError();
+  };
+
+  onProgress?.({ percent: 0, text: "正在加载打包组件...", eta: "" });
+  // 刻意使用动态引入：静态 import 会把 JSZip（约 48 KB min）打进工具页 chunk，
+  // 而它只在点击「下载全部」时才用得到；静态 import 无法表达这种按需加载。
+  const { default: JSZip } = await import("jszip");
+  throwIfAborted();
+
   const zip = new JSZip();
   const chunkSize = determineChunkSize();
   const startTime = Date.now();
   let completed = 0;
-
-  const throwIfAborted = () => {
-    if (signal?.aborted) throw new DownloadCancelledError();
-  };
 
   for (let offset = 0; offset < total; offset += chunkSize) {
     const chunk = sources.slice(offset, offset + chunkSize);
