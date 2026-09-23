@@ -23,6 +23,16 @@ export interface ToolMeta {
 
 export const tools: ToolMeta[] = [
   {
+    id: "photo-watermark",
+    name: "离线照片水印打码工具",
+    description:
+      "在浏览器本地为图片添加水印打码，支持平铺、单点与自定义数量布局，可批量打包下载。",
+    emoji: "🖼️",
+    category: "图片工具",
+    tags: ["水印", "打码", "图片", "批量下载", "隐私保护"],
+    component: lazy(() => import("../tools-impl/photo-watermark")),
+  },
+  {
     id: "alarm-clock",
     name: "在线闹钟",
     description: "在浏览器中创建多个闹钟，支持重复提醒、贪睡和声音通知。",

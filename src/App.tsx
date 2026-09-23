@@ -8,17 +8,26 @@ import {
   NavbarContent,
   NavbarItem,
   Spinner,
+  Tooltip,
 } from "@heroui/react";
 import Home from "./pages/Home";
 import ToolPage from "./pages/ToolPage";
 import NotFound from "./pages/NotFound";
 import { SearchContext } from "./search";
+import { currentTheme, storeTheme, type Theme } from "./utils/theme";
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [query, setQuery] = useState("");
+  const [theme, setTheme] = useState<Theme>(currentTheme);
   const showSearch = location.pathname === "/";
+
+  function toggleTheme() {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    storeTheme(next);
+    setTheme(next);
+  }
 
   return (
     <SearchContext.Provider value={{ query, setQuery }}>
@@ -57,6 +66,19 @@ export default function App() {
             )}
           </NavbarContent>
           <NavbarContent justify="end">
+            <NavbarItem>
+              <Tooltip content="切换深浅色主题">
+                <Button
+                  variant="light"
+                  size="sm"
+                  aria-label="切换主题"
+                  onPress={toggleTheme}
+                  startContent={<span aria-hidden>{theme === "dark" ? "🌙" : "🌞"}</span>}
+                >
+                  <span className="hidden sm:inline">切换主题</span>
+                </Button>
+              </Tooltip>
+            </NavbarItem>
             <NavbarItem>
               <Button
                 variant="light"
