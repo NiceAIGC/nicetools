@@ -42,6 +42,16 @@ export const tools: ToolMeta[] = [
     component: lazy(() => import("../tools-impl/alarm-clock")),
   },
   {
+    id: "llm-connectivity",
+    name: "大模型连通性测试",
+    description:
+      "用 OpenAI 或 Claude 格式探测模型接口是否可用，支持流式输出、curl 复测命令与本地记录配置。",
+    emoji: "🔌",
+    category: "AI 工具",
+    tags: ["LLM", "连通性", "OpenAI", "Claude", "curl", "流式"],
+    component: lazy(() => import("../tools-impl/llm-connectivity")),
+  },
+  {
     id: "llm-cost",
     name: "大模型费用计算器",
     description:
