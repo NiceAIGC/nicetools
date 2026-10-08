@@ -1,0 +1,17 @@
+.git
+node_modules
+dist
+dist-ssr
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+backend/data
+backend/nicetools
+backend/coverage*
+.npmrc
+.ignored
+.deploy-lock
+.pnpm-store
+tmp

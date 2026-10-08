@@ -1,8 +1,8 @@
 import type { ComponentType, LazyExoticComponent } from "react";
 import { lazy } from "react";
+import catalog from "./catalog.json";
 
-// 工具注册表 —— 新增工具只需在下方 `tools` 数组追加一条记录。
-// 首页搜索/卡片与路由都会自动读取本表，无需改动其它文件。
+// 工具元数据与后端共享；组件按目录约定懒加载。
 
 export interface ToolMeta {
   /** 唯一 id，同时作为路由 slug：/tools/:id */
@@ -21,88 +21,25 @@ export interface ToolMeta {
   component: LazyExoticComponent<ComponentType>;
 }
 
-export const tools: ToolMeta[] = [
-  {
-    id: "photo-watermark",
-    name: "离线照片水印打码工具",
-    description:
-      "在浏览器本地为图片添加水印打码，支持平铺、单点与自定义数量布局，可批量打包下载。",
-    emoji: "🖼️",
-    category: "图片工具",
-    tags: ["水印", "打码", "图片", "批量下载", "隐私保护"],
-    component: lazy(() => import("../tools-impl/photo-watermark")),
-  },
-  {
-    id: "alarm-clock",
-    name: "在线闹钟",
-    description: "在浏览器中创建多个闹钟，支持重复提醒、贪睡和声音通知。",
-    emoji: "⏰",
-    category: "生活工具",
-    tags: ["闹钟", "提醒", "贪睡", "本地存储"],
-    component: lazy(() => import("../tools-impl/alarm-clock")),
-  },
-  {
-    id: "llm-connectivity",
-    name: "大模型连通性测试",
-    description:
-      "用 OpenAI 或 Claude 格式探测模型接口是否可用，支持流式输出、curl 复测命令与本地记录配置。",
-    emoji: "🔌",
-    category: "AI 工具",
-    tags: ["LLM", "连通性", "OpenAI", "Claude", "curl", "流式"],
-    component: lazy(() => import("../tools-impl/llm-connectivity")),
-  },
-  {
-    id: "llm-cost",
-    name: "大模型费用计算器",
-    description:
-      "按 TPM、时长、输入输出比例、缓存命中率和支付折扣估算 token 成本。",
-    emoji: "💰",
-    category: "AI 工具",
-    tags: ["LLM", "Token", "TPM", "费用估算"],
-    component: lazy(() => import("../tools-impl/llm-cost")),
-  },
-  {
-    id: "prompt-cache-probe",
-    name: "Prompt 缓存探测器",
-    description: "预热固定前缀后发起并发请求，检测上游 API 的缓存命中情况。",
-    emoji: "🧪",
-    category: "AI 工具",
-    tags: ["Prompt Cache", "并发测试"],
-    component: lazy(() => import("../tools-impl/prompt-cache-probe")),
-  },
-  {
-    id: "json-value-extractor",
-    name: "JSON 值提取工具",
-    description: "逐行解析 JSON 对象，提取指定顶层键的值并汇总输出。",
-    emoji: "🔎",
-    category: "文本工具",
-    tags: ["JSON", "字段提取", "批量处理"],
-    component: lazy(() => import("../tools-impl/json-value-extractor")),
-  },
-  {
-    id: "text-delimiter",
-    name: "多行文本分隔工具",
-    description: "按自定义分隔符拆分多行文本，并按索引顺序重排、拼接。",
-    emoji: "✂️",
-    category: "文本工具",
-    tags: ["文本分隔", "列重排", "批量处理"],
-    component: lazy(() => import("../tools-impl/text-delimiter")),
-  },
-];
-
-export const categories: string[] = Array.from(
-  new Set(tools.map((t) => t.category)),
+const loaders = import.meta.glob<{ default: ComponentType }>(
+  "../tools-impl/*/index.tsx",
 );
+
+export const tools: ToolMeta[] = catalog.map((meta) => {
+  const load = loaders[`../tools-impl/${meta.id}/index.tsx`];
+  if (!load) throw new Error(`工具 ${meta.id} 缺少实现组件`);
+  return { ...meta, component: lazy(load) };
+});
 
 export function getTool(id: string): ToolMeta | undefined {
   return tools.find((t) => t.id === id);
 }
 
 // 简单的关键词过滤：命中名称、说明、分类或标签任一即可。
-export function searchTools(query: string): ToolMeta[] {
+export function searchTools(query: string, list: ToolMeta[] = tools): ToolMeta[] {
   const q = query.trim().toLowerCase();
-  if (!q) return tools;
-  return tools.filter((t) => {
+  if (!q) return list;
+  return list.filter((t) => {
     const haystack = [
       t.name,
       t.description,

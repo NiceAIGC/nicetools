@@ -2,7 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardBody, CardFooter, CardHeader, Chip } from "@heroui/react";
 import type { ToolMeta } from "../tools/registry";
 
-export default function ToolCard({ tool }: { tool: ToolMeta }) {
+export default function ToolCard({ tool, canUse = true }: { tool: ToolMeta; canUse?: boolean }) {
   const navigate = useNavigate();
 
   return (
@@ -12,6 +12,7 @@ export default function ToolCard({ tool }: { tool: ToolMeta }) {
       shadow="sm"
       onPress={() => navigate(`/tools/${tool.id}`)}
       className="h-full border border-default-200"
+      aria-label={canUse ? `打开${tool.name}` : `${tool.name}（当前不可用）`}
     >
       <CardHeader className="items-start justify-between gap-3 pb-2">
         <div className="flex min-w-0 items-center gap-3">
@@ -22,8 +23,8 @@ export default function ToolCard({ tool }: { tool: ToolMeta }) {
             {tool.name}
           </h3>
         </div>
-        <Chip size="sm" variant="flat" color="primary" className="shrink-0">
-          {tool.category}
+        <Chip size="sm" variant="flat" color={canUse ? "primary" : "warning"} className="shrink-0">
+          {canUse ? tool.category : `🔒 ${tool.category}`}
         </Chip>
       </CardHeader>
       <CardBody className="gap-3 py-2">
@@ -40,7 +41,7 @@ export default function ToolCard({ tool }: { tool: ToolMeta }) {
           ))}
         </div>
         <span className="shrink-0 text-sm font-medium text-primary" aria-hidden>
-          打开 →
+          {canUse ? "打开 →" : "查看权限 →"}
         </span>
       </CardFooter>
     </Card>

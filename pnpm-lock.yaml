@@ -11,6 +11,9 @@ importers:
       '@heroui/react':
         specifier: ^2.6.14
         version: 2.8.10(@react-spectrum/provider@3.11.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@types/react@18.3.31)(framer-motion@11.18.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.2)
+      '@heroui/theme':
+        specifier: 2.4.26
+        version: 2.4.26(tailwindcss@4.3.2)
       framer-motion:
         specifier: ^11.15.0
         version: 11.18.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)

@@ -14,6 +14,11 @@ tmp
 
 # Build output
 dist-ssr
+dist
+backend/data
+backend/nicetools
+backend/coverage*
+.deploy-lock
 tsconfig.tsbuildinfo
 *.local
 
