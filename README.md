@@ -9,6 +9,8 @@ NiceTools 是一个带后台管理和细粒度权限控制的在线工具集。�
 - Go 1.26 + Gin + GORM + SQLite
 - 单 Docker 容器：Go 服务提供 API、静态前端和受权限保护的工具代码资源
 
+界面使用 HeroUI 原生 Navbar、头像账户菜单和 Tabs；管理后台在桌面使用左侧导航，移动端使用横向栏目切换，搜索和账号操作均保留。
+
 ## 本地开发
 
 先生成前端产物，再启动 Go API。数据库默认写入 `backend/data/nicetools.db`。
