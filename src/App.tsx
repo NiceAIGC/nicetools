@@ -60,11 +60,11 @@ export default function App() {
         isBlurred
         isMenuOpen={menuOpen}
         onMenuOpenChange={setMenuOpen}
-        classNames={{ base: "bg-background/90", wrapper: "max-w-6xl gap-4 px-4 sm:px-6" }}
+        classNames={{ base: "bg-background/90", wrapper: "max-w-6xl gap-3 px-4 sm:gap-6 sm:px-6" }}
       >
-        <NavbarBrand className="min-w-0 flex-grow-0 gap-3">
-          <Link to="/" className="flex items-center gap-3" onClick={() => setMenuOpen(false)}>
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-medium bg-primary text-sm font-black text-primary-foreground shadow-small">N</span>
+        <NavbarBrand className="!flex-none">
+          <Link to="/" className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap" onClick={() => setMenuOpen(false)}>
+            <span aria-hidden="true" className="shrink-0 text-2xl leading-none">🧰</span>
             <span className="text-lg font-semibold tracking-tight text-foreground">NiceTools</span>
           </Link>
         </NavbarBrand>
@@ -87,7 +87,7 @@ export default function App() {
           </NavbarItem>}
         </NavbarContent>
 
-        <NavbarContent justify="end" className="!flex-grow-0 gap-2 sm:gap-3">
+        <NavbarContent justify="end" className="ml-auto !flex-none gap-2 sm:gap-3">
           <NavbarItem className="hidden md:flex">
             <Button variant={showSearch ? "flat" : "light"} color={showSearch ? "primary" : "default"} radius="full" size="sm" onPress={() => go("/")}>全部工具</Button>
           </NavbarItem>
