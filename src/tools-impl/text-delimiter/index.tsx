@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   Accordion,
   AccordionItem,
+  addToast,
   Alert,
   Button,
   Card,
@@ -16,9 +17,9 @@ import {
 } from "@heroui/react";
 import { copyText } from "../../utils/copyText";
 import {
+  indexPresets,
   parseIndexOrder,
   processDelimitedText,
-  type DelimitedTextResult,
 } from "./process";
 
 const example = `姓名----年龄----性别----职业
@@ -26,58 +27,111 @@ const example = `姓名----年龄----性别----职业
 李四----30----女----设计师
 王五----35----男----产品经理`;
 
+const DELIMITER_PRESETS: { label: string; value: string }[] = [
+  { label: "----", value: "----" },
+  { label: "逗号", value: "," },
+  { label: "Tab", value: "\t" },
+  { label: "分号", value: ";" },
+  { label: "竖线", value: "|" },
+  { label: "空格", value: " " },
+  { label: "斜杠", value: "/" },
+  { label: "减号", value: "-" },
+  { label: "等号", value: "=" },
+];
+
+function delimiterName(value: string): string {
+  return value === ""
+    ? "单个字符"
+    : value === "\t"
+      ? "Tab"
+      : value === " "
+        ? "空格"
+        : value;
+}
+
+function DelimiterField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <Input
+        label={`${label}（${delimiterName(value)}）`}
+        labelPlacement="outside"
+        value={value}
+        onValueChange={onChange}
+        description="可直接输入任意字符，或点选常用值"
+        variant="bordered"
+      />
+      <div className="flex flex-wrap gap-1.5">
+        {DELIMITER_PRESETS.map((preset) => (
+          <Button
+            key={preset.label}
+            size="sm"
+            radius="full"
+            variant={value === preset.value ? "solid" : "bordered"}
+            color={value === preset.value ? "primary" : "default"}
+            onPress={() => onChange(preset.value)}
+          >
+            {preset.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function TextDelimiter() {
   const [source, setSource] = useState("");
   const [inputDelimiter, setInputDelimiter] = useState("----");
   const [outputDelimiter, setOutputDelimiter] = useState(",");
   const [indexOrder, setIndexOrder] = useState("0");
-  const [result, setResult] = useState<DelimitedTextResult | null>(null);
-  const [status, setStatus] = useState("等待输入");
-  const [isError, setIsError] = useState(false);
 
-  const ruleSummary = useMemo(() => {
-    const parsed = parseIndexOrder(indexOrder);
-    const indexes = parsed.error ? indexOrder || "?" : parsed.indexes.join("、");
-    return `按“${inputDelimiter || "单个字符"}”拆分 → 取第 ${indexes} 列 → 用“${
-      outputDelimiter || "空字符"
-    }”连接`;
-  }, [indexOrder, inputDelimiter, outputDelimiter]);
-
-  function process() {
-    if (!source.trim()) {
-      setStatus("请输入原始文本");
-      setIsError(true);
-      return;
-    }
-
-    const parsed = parseIndexOrder(indexOrder);
-    if (parsed.error) {
-      setStatus(parsed.error);
-      setIsError(true);
-      return;
-    }
-
-    const next = processDelimitedText(
+  const parsedIndexes = useMemo(() => parseIndexOrder(indexOrder), [indexOrder]);
+  const columnStats = useMemo(
+    () => (source.trim() ? processDelimitedText(source, inputDelimiter, "", []) : null),
+    [source, inputDelimiter],
+  );
+  const result = useMemo(() => {
+    if (!source.trim() || parsedIndexes.error) return null;
+    return processDelimitedText(
       source,
       inputDelimiter,
       outputDelimiter,
-      parsed.indexes,
+      parsedIndexes.indexes,
     );
-    setResult(next);
-    if (next.invalidLines.length > 0) {
-      setStatus(`处理完成，${next.invalidLines.length} 行存在无效索引`);
-      setIsError(true);
-    } else {
-      setStatus("文本处理成功");
-      setIsError(false);
+  }, [source, inputDelimiter, outputDelimiter, parsedIndexes]);
+
+  const status = useMemo(() => {
+    if (parsedIndexes.error) return { text: parsedIndexes.error, error: true };
+    if (!source.trim()) return { text: "等待输入", error: false };
+    if (result && result.invalidLines.length > 0) {
+      return { text: `${result.invalidLines.length} 行索引越界`, error: true };
     }
-  }
+    return { text: "实时处理完成", error: false };
+  }, [parsedIndexes, source, result]);
+
+  const ruleSummary = useMemo(() => {
+    const indexes = parsedIndexes.error
+      ? indexOrder || "?"
+      : parsedIndexes.indexes.join("、");
+    return `按“${delimiterName(inputDelimiter)}”拆分 → 取第 ${indexes} 列 → 用“${delimiterName(
+      outputDelimiter,
+    )}”连接`;
+  }, [parsedIndexes, indexOrder, inputDelimiter, outputDelimiter]);
 
   async function copyResult() {
     if (!result) return;
     const copied = await copyText(result.output);
-    setStatus(copied ? "结果已复制" : "复制失败");
-    setIsError(!copied);
+    addToast({
+      title: copied ? "结果已复制到剪贴板" : "复制失败，请手动选择文本",
+      color: copied ? "success" : "danger",
+    });
   }
 
   function clear() {
@@ -85,21 +139,12 @@ export default function TextDelimiter() {
     setInputDelimiter("----");
     setOutputDelimiter(",");
     setIndexOrder("0");
-    setResult(null);
-    setStatus("已清空并恢复默认设置");
-    setIsError(false);
-  }
-
-  function handleInputEnter(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      process();
-    }
+    addToast({ title: "已清空并恢复默认设置" });
   }
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <Card shadow="sm" className="min-w-0 border border-default-200">
           <CardHeader className="flex items-center justify-between gap-3">
             <div>
@@ -107,12 +152,12 @@ export default function TextDelimiter() {
               <p className="text-xs text-default-500">拆分、重排并重新连接每行文本</p>
             </div>
             <Chip
-              color={isError ? "danger" : result ? "success" : "default"}
+              color={status.error ? "danger" : result ? "success" : "default"}
               variant="flat"
               size="sm"
               aria-live="polite"
             >
-              {status}
+              {status.text}
             </Chip>
           </CardHeader>
           <CardBody className="gap-5">
@@ -122,57 +167,48 @@ export default function TextDelimiter() {
               placeholder={example}
               value={source}
               onValueChange={setSource}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                  event.preventDefault();
-                  process();
-                }
-              }}
-              minRows={10}
+              minRows={12}
+              maxRows={28}
               variant="bordered"
               classNames={{ input: "font-mono text-sm" }}
             />
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Input
-                label="原始分隔符"
-                labelPlacement="outside"
-                value={inputDelimiter}
-                onValueChange={setInputDelimiter}
-                onKeyDown={handleInputEnter}
-                description="留空时按单个字符拆分"
-                variant="bordered"
-              />
-              <Input
-                label="输出分隔符"
-                labelPlacement="outside"
-                value={outputDelimiter}
-                onValueChange={setOutputDelimiter}
-                onKeyDown={handleInputEnter}
-                description="留空时直接拼接结果"
-                variant="bordered"
-              />
+              <DelimiterField label="原始分隔符" value={inputDelimiter} onChange={setInputDelimiter} />
+              <DelimiterField label="输出分隔符" value={outputDelimiter} onChange={setOutputDelimiter} />
             </div>
 
-            <Input
-              label="输出索引顺序"
-              labelPlacement="outside"
-              value={indexOrder}
-              onValueChange={setIndexOrder}
-              onKeyDown={handleInputEnter}
-              description="例如 0,2,1；多位数索引请使用逗号"
-              variant="bordered"
-              startContent={<span aria-hidden>↕️</span>}
-            />
+            <div className="flex flex-col gap-2">
+              <Input
+                label="输出索引顺序"
+                labelPlacement="outside"
+                value={indexOrder}
+                onValueChange={setIndexOrder}
+                description="例如 0,2,1；多位数索引请使用逗号，点下面的按钮可快速填入"
+                variant="bordered"
+                startContent={<span aria-hidden>↕️</span>}
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {indexPresets(columnStats?.maxColumns ?? 0).map((preset) => (
+                  <Button
+                    key={`${preset.label}:${preset.value}`}
+                    size="sm"
+                    radius="full"
+                    variant={indexOrder === preset.value ? "solid" : "bordered"}
+                    color={indexOrder === preset.value ? "primary" : "default"}
+                    onPress={() => setIndexOrder(preset.value)}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
 
             <Code color="primary" className="whitespace-normal text-xs leading-5">
               {ruleSummary}
             </Code>
           </CardBody>
-          <CardFooter className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <Button color="primary" onPress={process}>
-              处理文本
-            </Button>
+          <CardFooter className="grid grid-cols-2 gap-2">
             <Button variant="bordered" onPress={copyResult} isDisabled={!result}>
               复制结果
             </Button>
@@ -187,7 +223,9 @@ export default function TextDelimiter() {
             <div>
               <p className="font-semibold text-foreground">处理结果</p>
               <p className="text-xs text-default-500">
-                {result ? `索引顺序：${result.indexes.join(",")}` : "处理后的文本会显示在这里"}
+                {result
+                  ? `索引顺序：${result.indexes.join(",")}`
+                  : "输入文本后会立即显示在这里"}
               </p>
             </div>
             {result && (
@@ -214,7 +252,8 @@ export default function TextDelimiter() {
               placeholder="处理后的结果将显示在这里…"
               value={result?.output ?? ""}
               isReadOnly
-              minRows={14}
+              minRows={22}
+              maxRows={40}
               variant="bordered"
               classNames={{ input: "font-mono text-sm" }}
             />
@@ -227,8 +266,7 @@ export default function TextDelimiter() {
                   title={`查看 ${result.invalidLines.length} 个无效索引行`}
                 >
                   <p className="pb-2 text-sm text-danger">
-                    以下行的列数不足，越界索引已输出为空值：
-                    {result.invalidLines.join("、")}
+                    第 {result.invalidLines.join("、")} 行的列数少于索引要求，对应列输出为空。
                   </p>
                 </AccordionItem>
               </Accordion>
@@ -242,20 +280,18 @@ export default function TextDelimiter() {
           key="guide"
           aria-label="使用说明"
           title="使用说明与示例"
-          subtitle="了解索引规则、分隔符和快捷键"
         >
           <div className="flex flex-col gap-4 pb-2 text-sm text-default-600">
-            <Alert color="primary" variant="flat" title="快速操作">
-              在原始文本框内按 <Kbd keys={["command"]}>Enter</Kbd> 或
-              <Kbd keys={["ctrl"]}>Enter</Kbd> 可立即处理。
+            <Alert color="primary" variant="flat" title="实时处理">
+              修改文本、分隔符或索引顺序后结果会立即更新，无需点击按钮。快捷按钮可直接填入 <Kbd>Tab</Kbd>、空格、逗号等常用分隔符。
             </Alert>
             <pre className="overflow-x-auto rounded-medium bg-default-100 p-3 font-mono text-xs text-foreground">
-              {`a----b----c\n1----2----3----4`}
+              {`输入：a----b----c
+       1----2----3
+索引顺序：1,0
+输出：b,a
+       2,1`}
             </pre>
-            <p>
-              原始分隔符填“----”，输出分隔符填“,”，索引顺序填
-              “0,2,1”，结果为“a,c,b”和“1,3,2”。
-            </p>
           </div>
         </AccordionItem>
       </Accordion>

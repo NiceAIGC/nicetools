@@ -40,6 +40,39 @@ export function parseIndexOrder(raw: string): ParsedIndexes {
   return { indexes, error: null };
 }
 
+export interface IndexPreset {
+  label: string;
+  value: string;
+}
+
+/** 按实际列数生成常用重排方案；尚未识别列数时给固定示例。 */
+export function indexPresets(columnCount: number): IndexPreset[] {
+  if (columnCount <= 1) {
+    return [
+      { label: "0", value: "0" },
+      { label: "0,1", value: "0,1" },
+      { label: "1,0", value: "1,0" },
+      { label: "2,1,0", value: "2,1,0" },
+    ];
+  }
+
+  const columns = Array.from({ length: columnCount }, (_, index) => index);
+  const candidates: IndexPreset[] = [
+    { label: `全部 ${columnCount} 列`, value: columns.join(",") },
+    { label: "倒序", value: [...columns].reverse().join(",") },
+    { label: "仅第 1 列", value: "0" },
+    { label: "前 2 列", value: "0,1" },
+    { label: "2↔1", value: "1,0" },
+    { label: "去掉第 1 列", value: columns.slice(1).join(",") },
+  ];
+  const used = new Set<string>();
+  return candidates.filter((preset) => {
+    if (used.has(preset.value)) return false;
+    used.add(preset.value);
+    return true;
+  });
+}
+
 export function processDelimitedText(
   source: string,
   inputDelimiter: string,
@@ -47,14 +80,16 @@ export function processDelimitedText(
   indexes: number[],
 ): DelimitedTextResult {
   const lines = source.trim().replace(/\r\n?/g, "\n").split("\n");
-  const columnCounts: number[] = [];
   const invalidLines: number[] = [];
+  let minColumns = Number.POSITIVE_INFINITY;
+  let maxColumns = 0;
 
   const output = lines.map((line, lineIndex) => {
     const segments = inputDelimiter === ""
       ? Array.from(line)
       : line.split(inputDelimiter);
-    columnCounts.push(segments.length);
+    if (segments.length < minColumns) minColumns = segments.length;
+    if (segments.length > maxColumns) maxColumns = segments.length;
 
     let invalid = false;
     const selected = indexes.map((index) => {
@@ -72,8 +107,8 @@ export function processDelimitedText(
   return {
     output: output.join("\n"),
     lineCount: lines.length,
-    minColumns: Math.min(...columnCounts),
-    maxColumns: Math.max(...columnCounts),
+    minColumns,
+    maxColumns,
     invalidLines,
     indexes,
   };

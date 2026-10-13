@@ -46,6 +46,7 @@ var username = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
 var initiallyPublic = map[string]bool{
 	"photo-watermark": true, "alarm-clock": true, "llm-connectivity": true,
 	"llm-cost": true, "prompt-cache-probe": true, "json-value-extractor": true, "text-delimiter": true,
+	"doc-scan": true,
 }
 
 func (s *Store) Sync(path, adminUser, adminPass string) error {
