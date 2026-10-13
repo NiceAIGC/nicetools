@@ -8,6 +8,11 @@ import {
   CardBody,
   CardHeader,
   Chip,
+  Modal,
+  ModalBody,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
   Progress,
   Select,
   SelectItem,
@@ -16,8 +21,10 @@ import {
 } from "@heroui/react";
 import {
   buildPdf,
+  loadSavedSettings,
   renderScanCanvas,
   renderScannedPage,
+  saveSettings,
   SCAN_PRESETS,
   type PdfPageSpec,
   type ScanSettings,
@@ -44,18 +51,29 @@ const DPI_OPTIONS = [
   { value: "200", label: "高清 200 DPI" },
 ];
 
-const ACCEPT_TYPES =
-  ".pdf,image/*,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.log,.text";
+const ACCEPT_TYPES = ".pdf,image/*,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.log,.text";
+const ZOOM_STEP = 1.25;
+const ZOOM_MIN = 25;
+const ZOOM_MAX = 400;
 
 function sliderValue(value: number | number[]): number {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function downloadPdf(pdf: Uint8Array<ArrayBuffer>, pageAmount: number): void {
+function pdfFileName(documents: LoadedDocument[]): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const source = (documents[0]?.name ?? "文档").replace(/\.[^.]+$/, "");
+  const merged = documents.length > 1 ? `_等${documents.length}份` : "";
+  return `扫描件${stamp}_${source}${merged}.pdf`;
+}
+
+function downloadPdf(pdf: Uint8Array<ArrayBuffer>, fileName: string): void {
   const url = URL.createObjectURL(new Blob([pdf], { type: "application/pdf" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `扫描件-${pageAmount}页.pdf`;
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -63,16 +81,24 @@ function downloadPdf(pdf: Uint8Array<ArrayBuffer>, pageAmount: number): void {
 }
 
 export default function DocScan() {
+  const [saved] = useState(loadSavedSettings);
   const [documents, setDocuments] = useState<LoadedDocument[]>([]);
-  const [settings, setSettings] = useState<ScanSettings>(SCAN_PRESETS.standard);
-  const [presetKey, setPresetKey] = useState("standard");
+  const [settings, setSettings] = useState<ScanSettings>(saved.settings);
+  const [presetKey, setPresetKey] = useState(saved.presetKey);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [zoom, setZoom] = useState(100);
+  const [zoomCanvas, setZoomCanvas] = useState<HTMLCanvasElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const pages = useMemo(() => documents.flatMap((doc) => doc.pages), [documents]);
+
+  useEffect(() => {
+    saveSettings({ settings, presetKey });
+  }, [settings, presetKey]);
 
   useEffect(() => {
     const canvas = previewRef.current;
@@ -94,6 +120,23 @@ export default function DocScan() {
       window.clearTimeout(timer);
     };
   }, [pages, settings]);
+
+  useEffect(() => {
+    if (!zoomOpen || !zoomCanvas || !pages[0]) return;
+    let cancelled = false;
+    const dpi = Math.min(Math.max(settings.dpi, 150), 200);
+    void renderScanCanvas(pages[0], { ...settings, dpi }, 0)
+      .then((rendered) => {
+        if (cancelled) return;
+        zoomCanvas.width = rendered.width;
+        zoomCanvas.height = rendered.height;
+        zoomCanvas.getContext("2d")?.drawImage(rendered, 0, 0);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [zoomOpen, zoomCanvas, pages, settings]);
 
   function update(patch: Partial<ScanSettings>) {
     setSettings((previous) => ({ ...previous, ...patch }));
@@ -136,7 +179,7 @@ export default function DocScan() {
         specs.push(await renderScannedPage(pages[index], settings, index));
         setProgress(Math.round(((index + 1) / pages.length) * 100));
       }
-      downloadPdf(buildPdf(specs), specs.length);
+      downloadPdf(buildPdf(specs), pdfFileName(documents));
       addToast({ title: `已生成 ${specs.length} 页扫描件`, color: "success" });
     } catch (error) {
       addToast({
@@ -153,7 +196,7 @@ export default function DocScan() {
     <div className="flex min-w-0 flex-col gap-4">
       <Card
         shadow="sm"
-        className={`min-w-0 border-2 border-dashed transition-colors ${
+        className={`border-2 border-dashed transition-colors ${
           dragging ? "border-primary bg-primary-50/40" : "border-default-300 bg-default-50"
         }`}
         onDragOver={(event) => {
@@ -167,14 +210,26 @@ export default function DocScan() {
           void addFiles(Array.from(event.dataTransfer.files));
         }}
       >
-        <CardBody className="flex flex-col items-center gap-3 py-8 text-center">
-          <span className="text-4xl" aria-hidden>📠</span>
-          <div>
-            <p className="font-semibold text-foreground">把文档拖进来，或点击选择文件</p>
-            <p className="mt-1 text-xs text-default-500">支持 {SUPPORTED_INPUT_LABEL}</p>
-            <p className="text-xs text-default-400">全部在浏览器本地处理，文件不会上传</p>
+        <CardBody className="flex-row items-center gap-3 py-3">
+          <span className="shrink-0 text-xl" aria-hidden>📠</span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-foreground">
+              把文档拖进来，或点击“选择文件”
+            </p>
+            <p
+              className="truncate text-xs text-default-500"
+              title={`支持 ${SUPPORTED_INPUT_LABEL}；全部在浏览器本地处理，文件不会上传`}
+            >
+              支持 {SUPPORTED_INPUT_LABEL} · 本地处理不上传
+            </p>
           </div>
-          <Button color="primary" variant="flat" onPress={() => inputRef.current?.click()}>
+          <Button
+            size="sm"
+            color="primary"
+            variant="flat"
+            className="shrink-0"
+            onPress={() => inputRef.current?.click()}
+          >
             选择文件
           </Button>
           <input
@@ -352,7 +407,12 @@ export default function DocScan() {
             </Accordion>
 
             {busy && <Progress size="sm" color="primary" value={progress} showValueLabel />}
-            <Button color="primary" isLoading={busy} isDisabled={pages.length === 0} onPress={() => void generate()}>
+            <Button
+              color="primary"
+              isLoading={busy}
+              isDisabled={pages.length === 0}
+              onPress={() => void generate()}
+            >
               生成扫描 PDF（{pages.length} 页）
             </Button>
           </CardBody>
@@ -362,9 +422,11 @@ export default function DocScan() {
           <CardHeader className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="font-semibold text-foreground">效果预览</p>
-              <p className="text-xs text-default-500">显示第一页，实际导出会按清晰度重新渲染</p>
+              <p className="text-xs text-default-500">显示第一页，点击可放大查看细节</p>
             </div>
-            {pages.length > 0 && <Chip size="sm" color="primary" variant="flat">第 1 / {pages.length} 页</Chip>}
+            {pages.length > 0 && (
+              <Chip size="sm" color="primary" variant="flat">第 1 / {pages.length} 页</Chip>
+            )}
           </CardHeader>
           <CardBody>
             {pages.length === 0 ? (
@@ -373,17 +435,68 @@ export default function DocScan() {
                 <p className="text-sm">添加文档后这里会显示扫描效果</p>
               </div>
             ) : (
-              <div className="flex justify-center rounded-medium bg-default-100 p-3">
+              <button
+                type="button"
+                aria-label="放大扫描效果预览"
+                className="group flex w-full justify-center rounded-medium bg-default-100 p-3"
+                onClick={() => {
+                  setZoom(100);
+                  setZoomOpen(true);
+                }}
+              >
                 <canvas
                   ref={previewRef}
-                  aria-label="扫描效果预览"
-                  className="max-h-[560px] w-auto max-w-full rounded-small shadow-medium"
+                  aria-hidden="true"
+                  className="max-h-[560px] w-auto max-w-full rounded-small shadow-medium transition-opacity group-hover:opacity-90"
                 />
-              </div>
+              </button>
             )}
           </CardBody>
         </Card>
       </div>
+
+      <Modal isOpen={zoomOpen} onOpenChange={setZoomOpen} size="5xl" scrollBehavior="inside">
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader className="flex flex-wrap items-center justify-between gap-3">
+                <span>扫描效果预览</span>
+                <Chip size="sm" variant="flat">{zoom}%</Chip>
+              </ModalHeader>
+              <ModalBody className="overflow-auto bg-default-100 p-4">
+                <div className="w-full overflow-auto">
+                  <canvas
+                    ref={setZoomCanvas}
+                    aria-label="放大后的扫描效果预览"
+                    className="mx-auto block h-auto shadow-medium"
+                    style={{ width: `${zoom}%`, maxWidth: "none" }}
+                  />
+                </div>
+              </ModalBody>
+              <ModalFooter>
+                <Button
+                  size="sm"
+                  variant="flat"
+                  isDisabled={zoom <= ZOOM_MIN}
+                  onPress={() => setZoom((value) => Math.max(ZOOM_MIN, Math.round(value / ZOOM_STEP)))}
+                >
+                  缩小
+                </Button>
+                <Button size="sm" variant="flat" onPress={() => setZoom(100)}>适应宽度</Button>
+                <Button
+                  size="sm"
+                  variant="flat"
+                  isDisabled={zoom >= ZOOM_MAX}
+                  onPress={() => setZoom((value) => Math.min(ZOOM_MAX, Math.round(value * ZOOM_STEP)))}
+                >
+                  放大
+                </Button>
+                <Button size="sm" color="primary" onPress={onClose}>完成</Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
     </div>
   );
 }

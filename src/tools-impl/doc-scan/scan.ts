@@ -66,6 +66,83 @@ export const SCAN_PRESETS: Record<string, ScanSettings> = {
   },
 };
 
+const SETTINGS_STORAGE_KEY = "nicetools.doc-scan.settings.v1";
+
+const VALID_MODES: Record<ScanMode, true> = { color: true, gray: true, bw: true };
+
+const NUMBER_BOUNDS: Record<
+  "rotate" | "rotateVariance" | "brightness" | "contrast" | "yellowish" | "blur" | "noise" | "dpi",
+  [number, number]
+> = {
+  rotate: [0, 3],
+  rotateVariance: [0, 1],
+  brightness: [0.8, 1.25],
+  contrast: [0.8, 1.6],
+  yellowish: [0, 0.5],
+  blur: [0, 1.5],
+  noise: [0, 0.5],
+  dpi: [72, 300],
+};
+
+export interface SavedScanSettings {
+  settings: ScanSettings;
+  presetKey: string;
+}
+
+function clamp(value: unknown, fallback: number, [min, max]: [number, number]): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : fallback;
+}
+
+/** 校验浏览器保存的方案：字段缺失或越界时回退默认值，绝不把坏数据带进渲染。 */
+function normalizeSettings(raw: unknown): ScanSettings {
+  const fallback = SCAN_PRESETS.standard;
+  if (typeof raw !== "object" || raw === null) return { ...fallback };
+  const value = raw as Record<string, unknown>;
+  const mode =
+    typeof value.mode === "string" && value.mode in VALID_MODES
+      ? (value.mode as ScanMode)
+      : fallback.mode;
+  return {
+    mode,
+    border: value.border !== false,
+    rotate: clamp(value.rotate, fallback.rotate, NUMBER_BOUNDS.rotate),
+    rotateVariance: clamp(value.rotateVariance, fallback.rotateVariance, NUMBER_BOUNDS.rotateVariance),
+    brightness: clamp(value.brightness, fallback.brightness, NUMBER_BOUNDS.brightness),
+    contrast: clamp(value.contrast, fallback.contrast, NUMBER_BOUNDS.contrast),
+    yellowish: clamp(value.yellowish, fallback.yellowish, NUMBER_BOUNDS.yellowish),
+    blur: clamp(value.blur, fallback.blur, NUMBER_BOUNDS.blur),
+    noise: clamp(value.noise, fallback.noise, NUMBER_BOUNDS.noise),
+    dpi: clamp(value.dpi, fallback.dpi, NUMBER_BOUNDS.dpi),
+  };
+}
+
+/** 读取上次保存的扫描方案，下次访问直接作为默认值。 */
+export function loadSavedSettings(): SavedScanSettings {
+  const fallback: SavedScanSettings = { settings: SCAN_PRESETS.standard, presetKey: "standard" };
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<SavedScanSettings> | null;
+    if (typeof parsed !== "object" || parsed === null) return fallback;
+    const presetKey =
+      typeof parsed.presetKey === "string" && (parsed.presetKey in SCAN_PRESETS || parsed.presetKey === "custom")
+        ? parsed.presetKey
+        : fallback.presetKey;
+    return { settings: normalizeSettings(parsed.settings), presetKey };
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveSettings(value: SavedScanSettings): void {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // 隐私模式或存储不可用时，本次会话仍可正常调整。
+  }
+}
+
 export interface PdfPageSpec {
   jpeg: Uint8Array;
   pixelWidth: number;

@@ -4,15 +4,37 @@
 
 @custom-variant dark (&:is(.dark *));
 
-html,
-body,
-#root {
-  height: 100%;
+/* 页面统一由视口滚动；预留滚动条槽位，弹层锁定滚动时不会让整页横向抖动。 */
+html {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 120, 130, 0.45) transparent;
 }
 
 body {
   margin: 0;
   overflow-x: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(120, 120, 130, 0.45);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 130, 0.7);
+  background-clip: content-box;
 }
 
 input[type="number"] {
