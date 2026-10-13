@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BreadcrumbItem, Breadcrumbs, Button, Chip, Spinner } from "@heroui/react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getTool } from "../tools/registry";
+import { getComponent, type ToolMeta } from "../tools/registry";
 import { api, ApiError, type ToolAccess } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import NotFound from "./NotFound";
@@ -9,13 +9,25 @@ import NotFound from "./NotFound";
 type Gate = { id: string; identity: string; status: "ok" | "hidden" | "denied" | "error" };
 export default function ToolPage() {
   const { id = "" } = useParams<{ id: string }>();
-  const tool = getTool(id);
   const navigate = useNavigate();
   const { session, tools, loading, error, refresh } = useAuth();
   const identity = session?.user ? String(session.user.id) : "guest";
   const [gate, setGate] = useState<Gate | null>(null);
   const [retry, setRetry] = useState(0);
   const permitted = tools?.find(item => item.id === id);
+  const component = id ? getComponent(id) : undefined;
+  const tool: ToolMeta | undefined =
+    permitted && component
+      ? {
+          id: permitted.id,
+          name: permitted.name,
+          description: permitted.description,
+          emoji: permitted.emoji,
+          category: permitted.category,
+          tags: permitted.tags,
+          component,
+        }
+      : undefined;
   const canUse = !!permitted?.can_use;
   useEffect(() => {
     if (!tool || loading || error || !canUse) return;

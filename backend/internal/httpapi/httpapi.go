@@ -84,6 +84,7 @@ func (a *API) Run() *gin.Engine {
 	admin := r.Group("/api/admin", a.requireAuth, a.requireAdmin)
 	admin.GET("/users", a.users)
 	admin.GET("/groups", a.groups)
+	admin.GET("/categories", a.categories)
 	admin.GET("/tools", a.policies)
 	admin.GET("/audit", a.audit)
 	write := admin.Group("", a.csrf)
@@ -93,7 +94,13 @@ func (a *API) Run() *gin.Engine {
 	write.POST("/groups", a.createGroup)
 	write.PUT("/groups/:id", a.updateGroup)
 	write.DELETE("/groups/:id", a.deleteGroup)
+	write.POST("/categories", a.createCategory)
+	write.POST("/categories/reorder", a.reorderCategories)
+	write.PUT("/categories/:id", a.updateCategory)
+	write.DELETE("/categories/:id", a.deleteCategory)
 	write.PUT("/tools/:id", a.savePolicy)
+	write.PUT("/tools/:id/meta", a.saveToolMeta)
+	write.POST("/tools/:id/reset", a.resetToolMeta)
 	r.NoRoute(a.static)
 	return r
 }

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Button, Card, CardBody, Chip, Spinner, Tab, Tabs } from "@heroui/react";
 import { useSearchParams } from "react-router-dom";
 import { useSearch } from "../search";
-import { searchTools, tools } from "../tools/registry";
+import { getComponent, searchTools, type ToolMeta } from "../tools/registry";
 import ToolCard from "../components/ToolCard";
 import { useAuth } from "../auth/AuthContext";
 import type { ToolAccess } from "../api/client";
@@ -13,9 +13,24 @@ export default function Home() {
   const { tools: access, loading, error, refresh } = useAuth();
   const [params, setParams] = useSearchParams();
   const permitted = useMemo(() => {
-    const byID: Record<string, ToolAccess> = {};
-    for (const item of access ?? []) byID[item.id] = item;
-    return tools.filter(tool => byID[tool.id]).map(tool => ({ tool, access: byID[tool.id] }));
+    const rows: { tool: ToolMeta; access: ToolAccess }[] = [];
+    for (const item of access ?? []) {
+      const component = getComponent(item.id);
+      if (!component) continue;
+      rows.push({
+        tool: {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          emoji: item.emoji,
+          category: item.category,
+          tags: item.tags,
+          component,
+        },
+        access: item,
+      });
+    }
+    return rows;
   }, [access]);
   const categories = [...new Set(permitted.map(item => item.tool.category))];
   const requested = params.get("category") ?? all;

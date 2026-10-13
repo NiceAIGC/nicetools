@@ -1,9 +1,19 @@
 export interface Group { id:number; name:string; description:string; created_at:string }
+export interface Category { id:number; name:string; description:string; sort:number; created_at:string }
 export interface User { id:number; username:string; display_name:string; role:'admin'|'user'; disabled:boolean; groups:Group[]; created_at:string }
 export interface Session { user:User|null; csrf_token:string }
 export interface ToolAccess { id:string; name:string; description:string; emoji:string; category:string; tags:string[]; can_use:boolean }
 export interface GroupRule { group_id:number; visible:boolean|null; use:boolean|null }
-export interface ToolPolicy extends Omit<ToolAccess,'can_use'> { enabled:boolean; guest_visible:boolean; guest_use:boolean; member_visible:boolean; member_use:boolean; group_rules:GroupRule[] }
+export interface ToolPolicy extends Omit<ToolAccess,'can_use'> {
+  category_id:number|null;
+  sort:number;
+  enabled:boolean;
+  guest_visible:boolean;
+  guest_use:boolean;
+  member_visible:boolean;
+  member_use:boolean;
+  group_rules:GroupRule[];
+}
 export interface Audit { id:number; actor:string; action:string; target:string; created_at:string }
 export class ApiError extends Error { constructor(public readonly status:number,message:string){super(message);this.name='ApiError'} }
 let csrf='';

@@ -2,6 +2,15 @@ package model
 
 import "time"
 
+// Category 是工具分类：名称、说明、顺序都由管理员在后台维护。
+type Category struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"uniqueIndex;not null" json:"name"`
+	Description string    `json:"description"`
+	Sort        int       `json:"sort"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type Group struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Name        string    `gorm:"uniqueIndex;not null" json:"name"`
@@ -20,10 +29,22 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// Tool 的展示信息（名称/图标/说明/分类/标签/顺序）由后台维护，
+// 代码目录只负责种子默认值；访问策略同样是后台数据。
 type Tool struct {
-	ID                                                        string `gorm:"primaryKey"`
-	Name, Description, Emoji, Category, Tags                  string
-	Enabled, GuestVisible, GuestUse, MemberVisible, MemberUse bool
+	ID          string     `gorm:"primaryKey"`
+	Name        string
+	Description string
+	Emoji       string
+	Tags        string
+	CategoryID  *uint      `gorm:"index"`
+	Category    *Category  `gorm:"foreignKey:CategoryID;constraint:OnDelete:SET NULL" json:"-"`
+	Sort        int
+	Enabled     bool
+	GuestVisible bool
+	GuestUse     bool
+	MemberVisible bool
+	MemberUse     bool
 }
 
 type GroupRule struct {
@@ -35,8 +56,8 @@ type GroupRule struct {
 }
 
 type Session struct {
-	TokenHash string `gorm:"primaryKey"`
-	UserID    *uint  `gorm:"index"`
+	TokenHash string    `gorm:"primaryKey"`
+	UserID    *uint     `gorm:"index"`
 	CSRFHash  string
 	ExpiresAt time.Time `gorm:"index"`
 	CreatedAt time.Time
@@ -51,6 +72,7 @@ type Audit struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Catalog 是代码目录里携带的默认元数据，用来播种新工具与「恢复默认」。
 type Catalog struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`

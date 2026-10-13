@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -17,7 +18,10 @@ import (
 	"nicetools/backend/internal/model"
 )
 
-type Store struct{ DB *gorm.DB }
+type Store struct {
+	DB      *gorm.DB
+	catalog map[string]model.Catalog
+}
 
 func Open(c config.Config) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(c.DBPath), 0700); err != nil {
@@ -34,21 +38,78 @@ func Open(c config.Config) (*Store, error) {
 	// 单副本 SQLite；序列化写事务保证“最后管理员”检查和修改不可交错。
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
-	if err = db.AutoMigrate(&model.Group{}, &model.User{}, &model.Tool{}, &model.GroupRule{}, &model.Session{}, &model.Audit{}); err != nil {
+	models := []any{&model.Category{}, &model.Group{}, &model.User{}, &model.Tool{}, &model.GroupRule{}, &model.Session{}, &model.Audit{}}
+	if err = db.AutoMigrate(models...); err != nil {
 		sqlDB.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, catalog: map[string]model.Catalog{}}, nil
 }
 
 var slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 var username = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
+
+// initiallyPublic 决定「随版本默认开放」的工具；清单外的新工具默认对所有人关闭。
 var initiallyPublic = map[string]bool{
 	"photo-watermark": true, "alarm-clock": true, "llm-connectivity": true,
 	"llm-cost": true, "prompt-cache-probe": true, "json-value-extractor": true, "text-delimiter": true,
 	"doc-scan": true,
 }
 
+// EnsureCategory 按名称取或建分类，供种子同步与恢复默认共用。
+func EnsureCategory(db *gorm.DB, name string, sort int) (model.Category, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return model.Category{}, nil
+	}
+	var category model.Category
+	err := db.Where("name = ?", name).First(&category).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		category = model.Category{Name: name, Sort: sort}
+		if err := db.Create(&category).Error; err != nil {
+			return category, err
+		}
+		return category, nil
+	}
+	return category, err
+}
+
+// migrateLegacyCategory 把旧的 tools.category 文本列迁到分类表后删除旧列。
+func migrateLegacyCategory(tx *gorm.DB) error {
+	var present int64
+	if err := tx.Raw("SELECT COUNT(*) FROM pragma_table_info('tools') WHERE name = 'category'").Scan(&present).Error; err != nil {
+		return err
+	}
+	if present == 0 {
+		return nil
+	}
+	type legacyRow struct {
+		ID       string
+		Category string
+	}
+	var rows []legacyRow
+	if err := tx.Raw("SELECT id, category FROM tools WHERE category_id IS NULL AND category != ''").Scan(&rows).Error; err != nil {
+		return err
+	}
+	created := make(map[string]uint)
+	for _, row := range rows {
+		categoryID, ok := created[row.Category]
+		if !ok {
+			category, err := EnsureCategory(tx, row.Category, len(created))
+			if err != nil {
+				return err
+			}
+			categoryID = category.ID
+			created[row.Category] = categoryID
+		}
+		if err := tx.Exec("UPDATE tools SET category_id = ? WHERE id = ?", categoryID, row.ID).Error; err != nil {
+			return err
+		}
+	}
+	return tx.Exec("ALTER TABLE tools DROP COLUMN category").Error
+}
+
+// Sync 用代码目录播种/清理工具；已存在工具的元数据与策略完全由后台拥有，不覆盖。
 func (s *Store) Sync(path, adminUser, adminPass string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -60,13 +121,23 @@ func (s *Store) Sync(path, adminUser, adminPass string) error {
 	}
 	ids := make([]string, 0, len(catalog))
 	seen := make(map[string]bool, len(catalog))
+	defaults := make(map[string]model.Catalog, len(catalog))
+	categorySort := make(map[string]int)
 	for _, tool := range catalog {
-		if !slug.MatchString(tool.ID) || tool.Name == "" || seen[tool.ID] {
+		if !slug.MatchString(tool.ID) || strings.TrimSpace(tool.Name) == "" || seen[tool.ID] {
 			return fmt.Errorf("invalid or duplicate catalog tool: %s", tool.ID)
+		}
+		if tool.Category != "" {
+			if _, ok := categorySort[tool.Category]; !ok {
+				categorySort[tool.Category] = len(categorySort)
+			}
 		}
 		seen[tool.ID] = true
 		ids = append(ids, tool.ID)
+		defaults[tool.ID] = tool
 	}
+	s.catalog = defaults
+
 	return s.DB.Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&model.User{}).Count(&count).Error; err != nil {
@@ -88,21 +159,34 @@ func (s *Store) Sync(path, adminUser, adminPass string) error {
 				return err
 			}
 		}
-		for _, meta := range catalog {
+		if err := migrateLegacyCategory(tx); err != nil {
+			return err
+		}
+		for index, meta := range catalog {
 			var tool model.Tool
 			err := tx.First(&tool, "id = ?", meta.ID).Error
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				category, err := EnsureCategory(tx, meta.Category, categorySort[meta.Category])
+				if err != nil {
+					return err
+				}
+				tags, err := json.Marshal(meta.Tags)
+				if err != nil {
+					return err
+				}
 				public := initiallyPublic[meta.ID]
-				tool = model.Tool{ID: meta.ID, Enabled: true, GuestVisible: public, GuestUse: public, MemberVisible: public, MemberUse: public}
+				tool = model.Tool{
+					ID: meta.ID, Name: meta.Name, Description: meta.Description, Emoji: meta.Emoji,
+					Tags: string(tags), Sort: index, Enabled: true,
+					GuestVisible: public, GuestUse: public, MemberVisible: public, MemberUse: public,
+				}
+				if category.ID != 0 {
+					tool.CategoryID = &category.ID
+				}
+				if err := tx.Create(&tool).Error; err != nil {
+					return err
+				}
 			} else if err != nil {
-				return err
-			}
-			tags, err := json.Marshal(meta.Tags)
-			if err != nil {
-				return err
-			}
-			tool.Name, tool.Description, tool.Emoji, tool.Category, tool.Tags = meta.Name, meta.Description, meta.Emoji, meta.Category, string(tags)
-			if err := tx.Save(&tool).Error; err != nil {
 				return err
 			}
 		}
@@ -111,6 +195,12 @@ func (s *Store) Sync(path, adminUser, adminPass string) error {
 		}
 		return tx.Where("expires_at <= ?", time.Now()).Delete(&model.Session{}).Error
 	})
+}
+
+// CatalogDefault 返回代码目录里的默认元数据，用于后台「恢复默认」。
+func (s *Store) CatalogDefault(id string) (model.Catalog, bool) {
+	meta, ok := s.catalog[id]
+	return meta, ok
 }
 
 func (s *Store) Close() error {

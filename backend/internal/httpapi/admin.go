@@ -107,6 +107,93 @@ func (a *API) policies(c *gin.Context) {
 	}
 	c.JSON(200, rows)
 }
+
+func (a *API) categories(c *gin.Context) {
+	rows, err := a.S.Categories()
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.JSON(200, rows)
+}
+
+func (a *API) createCategory(c *gin.Context) {
+	var input service.CategoryInput
+	if !bind(c, &input) {
+		return
+	}
+	row, err := a.S.SaveCategory(current(c).ID, 0, input)
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.JSON(201, row)
+}
+
+func (a *API) updateCategory(c *gin.Context) {
+	id, ok := numericID(c)
+	if !ok {
+		return
+	}
+	var input service.CategoryInput
+	if !bind(c, &input) {
+		return
+	}
+	row, err := a.S.SaveCategory(current(c).ID, id, input)
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.JSON(200, row)
+}
+
+func (a *API) reorderCategories(c *gin.Context) {
+	var input struct {
+		IDs []uint `json:"ids"`
+	}
+	if !bind(c, &input) {
+		return
+	}
+	if err := a.S.ReorderCategories(current(c).ID, input.IDs); err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.Status(204)
+}
+
+func (a *API) deleteCategory(c *gin.Context) {
+	id, ok := numericID(c)
+	if !ok {
+		return
+	}
+	if err := a.S.DeleteCategory(current(c).ID, id); err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.Status(204)
+}
+
+func (a *API) saveToolMeta(c *gin.Context) {
+	var input service.ToolMetaInput
+	if !bind(c, &input) {
+		return
+	}
+	row, err := a.S.SaveToolMeta(current(c).ID, c.Param("id"), input)
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.JSON(200, row)
+}
+
+func (a *API) resetToolMeta(c *gin.Context) {
+	row, err := a.S.ResetToolMeta(current(c).ID, c.Param("id"))
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	c.JSON(200, row)
+}
 func (a *API) savePolicy(c *gin.Context) {
 	var input service.PolicyInput
 	if !bind(c, &input) {

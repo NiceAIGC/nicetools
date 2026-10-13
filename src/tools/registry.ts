@@ -2,7 +2,9 @@ import type { ComponentType, LazyExoticComponent } from "react";
 import { lazy } from "react";
 import catalog from "./catalog.json";
 
-// 工具元数据与后端共享；组件按目录约定懒加载。
+// 展示信息（名称/Logo/说明/分类/标签/顺序）由后台维护，来自 /api/tools；
+// 这里只负责「工具 id → 懒加载组件」的代码映射与搜索辅助。
+// catalog.json 同时是后端播种新工具的默认值与构建期资源保护清单。
 
 export interface ToolMeta {
   /** 唯一 id，同时作为路由 slug：/tools/:id */
@@ -11,11 +13,11 @@ export interface ToolMeta {
   name: string;
   /** 一句话说明 */
   description: string;
-  /** emoji 图标 */
+  /** Logo/图标字符 */
   emoji: string;
   /** 分类 */
   category: string;
-  /** 标签，用于补充工具特征并参与搜索 */
+  /** 标签 */
   tags: string[];
   /** 懒加载的工具组件 */
   component: LazyExoticComponent<ComponentType>;
@@ -25,18 +27,22 @@ const loaders = import.meta.glob<{ default: ComponentType }>(
   "../tools-impl/*/index.tsx",
 );
 
-export const tools: ToolMeta[] = catalog.map((meta) => {
+const components = new Map<string, LazyExoticComponent<ComponentType>>();
+for (const meta of catalog) {
   const load = loaders[`../tools-impl/${meta.id}/index.tsx`];
   if (!load) throw new Error(`工具 ${meta.id} 缺少实现组件`);
-  return { ...meta, component: lazy(load) };
-});
+  components.set(meta.id, lazy(load));
+}
 
-export function getTool(id: string): ToolMeta | undefined {
-  return tools.find((t) => t.id === id);
+/** 取工具组件；后台存在但代码缺实现时返回 undefined。 */
+export function getComponent(
+  id: string,
+): LazyExoticComponent<ComponentType> | undefined {
+  return components.get(id);
 }
 
 // 简单的关键词过滤：命中名称、说明、分类或标签任一即可。
-export function searchTools(query: string, list: ToolMeta[] = tools): ToolMeta[] {
+export function searchTools(query: string, list: ToolMeta[]): ToolMeta[] {
   const q = query.trim().toLowerCase();
   if (!q) return list;
   return list.filter((t) => {

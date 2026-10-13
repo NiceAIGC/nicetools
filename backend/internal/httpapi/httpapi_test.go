@@ -329,3 +329,155 @@ func TestPolicySurvivesCatalogSync(t *testing.T) {
 	expect(t, f.client().request("GET", "/api/tools/text-delimiter/access", nil, false), 403)
 	expect(t, f.client().request("GET", "/api/tools/future-tool/access", nil, false), 404)
 }
+
+func createCategory(t *testing.T, c *client, name string) model.Category {
+	t.Helper()
+	res := c.request("POST", "/api/admin/categories", service.CategoryInput{Name: name, Description: name + " 说明"}, true)
+	expect(t, res, 201)
+	return decode[model.Category](t, res)
+}
+
+func publicTool(t *testing.T, rows []service.ToolAccess, id string) service.ToolAccess {
+	t.Helper()
+	for _, row := range rows {
+		if row.ID == id {
+			return row
+		}
+	}
+	t.Fatalf("tool %s missing from %+v", id, rows)
+	return service.ToolAccess{}
+}
+
+func TestToolMetadataEditableByAdmin(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	guest := f.client()
+	category := createCategory(t, admin, "自定义分类")
+
+	meta := service.ToolMetaInput{
+		Name: "改名后的工具", Emoji: "🧪", Description: "后台写入的新说明",
+		Tags: []string{"标签甲", "标签乙"}, CategoryID: new(category.ID), Sort: 7,
+	}
+	expect(t, admin.request("PUT", "/api/admin/tools/text-delimiter/meta", meta, true), 200)
+
+	row := publicTool(t, decode[[]service.ToolAccess](t, guest.request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Name != "改名后的工具" || row.Emoji != "🧪" || row.Description != "后台写入的新说明" || row.Category != "自定义分类" {
+		t.Fatalf("guest sees stale metadata: %+v", row)
+	}
+	if len(row.Tags) != 2 || row.Tags[0] != "标签甲" {
+		t.Fatalf("tags not dynamic: %+v", row.Tags)
+	}
+
+	// 校验：非法分类、空名称、非管理员都必须拒绝。
+	expect(t, admin.request("PUT", "/api/admin/tools/text-delimiter/meta", service.ToolMetaInput{Name: "x", Emoji: "y", CategoryID: new(uint(999))}, true), 400)
+	expect(t, admin.request("PUT", "/api/admin/tools/text-delimiter/meta", service.ToolMetaInput{Name: "  ", Emoji: "y"}, true), 400)
+	member := createUser(t, admin, "meta-member", "user", nil)
+	expect(t, f.client().request("PUT", "/api/admin/users/"+itoa(member.ID), nil, true), 401)
+	plain := f.client()
+	plain.login(member.Username, adminPassword)
+	expect(t, plain.request("PUT", "/api/admin/tools/text-delimiter/meta", meta, true), 403)
+}
+
+func TestCategoryRenameDeleteAndMetaReset(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	guest := f.client()
+	category := createCategory(t, admin, "可改名分类")
+	meta := service.ToolMetaInput{Name: "自定义名称", Emoji: "🚀", Description: "自定义说明", Tags: []string{"旧标签"}, CategoryID: new(category.ID), Sort: 3}
+	expect(t, admin.request("PUT", "/api/admin/tools/text-delimiter/meta", meta, true), 200)
+
+	expect(t, admin.request("PUT", "/api/admin/categories/"+itoa(category.ID), service.CategoryInput{Name: "改名后分类", Description: "改说明"}, true), 200)
+	row := publicTool(t, decode[[]service.ToolAccess](t, guest.request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Category != "改名后分类" {
+		t.Fatalf("rename not reflected: %+v", row)
+	}
+
+	// 删除分类后工具回到「未分类」，但工具本身保留。
+	expect(t, admin.request("DELETE", "/api/admin/categories/"+itoa(category.ID), nil, true), 204)
+	row = publicTool(t, decode[[]service.ToolAccess](t, guest.request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Category != service.UncategorizedName || row.Name != "自定义名称" {
+		t.Fatalf("category delete should uncategorize only: %+v", row)
+	}
+
+	// 恢复默认：展示信息回代码目录值，访问策略不受影响。
+	expect(t, admin.request("POST", "/api/admin/tools/text-delimiter/reset", nil, true), 200)
+	row = publicTool(t, decode[[]service.ToolAccess](t, guest.request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Name != "Text" || row.Emoji != "x" || row.Category != "text" || len(row.Tags) != 0 {
+		t.Fatalf("reset did not restore catalog defaults: %+v", row)
+	}
+}
+
+func TestCatalogSyncKeepsAdminMetadata(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	meta := service.ToolMetaInput{Name: "后台定稿名称", Emoji: "📌", Description: "不要被代码覆盖", Tags: []string{"保留"}}
+	expect(t, admin.request("PUT", "/api/admin/tools/text-delimiter/meta", meta, true), 200)
+	if err := f.store.Sync(f.config.CatalogPath, "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	row := publicTool(t, decode[[]service.ToolAccess](t, f.client().request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Name != "后台定稿名称" || row.Emoji != "📌" {
+		t.Fatalf("sync overwrote admin metadata: %+v", row)
+	}
+}
+
+func TestCategoryReorderRenumbersEqualSorts(t *testing.T) {
+	f := setup(t)
+	admin := f.admin()
+	for _, name := range []string{"后建甲", "后建乙"} {
+		expect(t, admin.request("POST", "/api/admin/categories", service.CategoryInput{Name: name}, true), 201)
+	}
+	before := decode[[]model.Category](t, admin.request("GET", "/api/admin/categories", nil, false))
+	ids := make([]uint, 0, len(before))
+	for _, category := range before {
+		ids = append(ids, category.ID)
+	}
+	// 新分类排在末尾；把最后两个交换后顺序必须真正改变且排序值整体重编号。
+	ids[len(ids)-1], ids[len(ids)-2] = ids[len(ids)-2], ids[len(ids)-1]
+	expect(t, admin.request("POST", "/api/admin/categories/reorder", map[string][]uint{"ids": ids}, true), 204)
+
+	after := decode[[]model.Category](t, admin.request("GET", "/api/admin/categories", nil, false))
+	if after[len(after)-1].ID != ids[len(ids)-1] || after[len(after)-2].ID != ids[len(ids)-2] {
+		t.Fatalf("reorder did not move categories: %+v", after)
+	}
+	for index := 1; index < len(after); index++ {
+		if after[index-1].Sort >= after[index].Sort {
+			t.Fatalf("reorder must renumber sorts ascending: %+v", after)
+		}
+	}
+	expect(t, admin.request("POST", "/api/admin/categories/reorder", map[string][]uint{"ids": []uint{1}}, true), 400)
+	duplicated := append(append([]uint{}, ids...), ids[0])
+	expect(t, admin.request("POST", "/api/admin/categories/reorder", map[string][]uint{"ids": duplicated}, true), 400)
+}
+
+func TestLegacyCategoryColumnMigrates(t *testing.T) {
+	f := setup(t)
+	if err := f.store.DB.Exec("ALTER TABLE tools ADD COLUMN category TEXT NOT NULL DEFAULT ''").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB.Exec("UPDATE tools SET category_id = NULL, category = '旧分类'").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Sync(f.config.CatalogPath, "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var leftover int64
+	if err := f.store.DB.Raw("SELECT COUNT(*) FROM pragma_table_info('tools') WHERE name = 'category'").Scan(&leftover).Error; err != nil {
+		t.Fatal(err)
+	}
+	if leftover != 0 {
+		t.Fatal("legacy tools.category column must be dropped")
+	}
+	var migrated int64
+	if err := f.store.DB.Raw("SELECT COUNT(*) FROM tools WHERE category_id IS NULL").Scan(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated != 0 {
+		t.Fatal("legacy category text must be backfilled into categories")
+	}
+	row := publicTool(t, decode[[]service.ToolAccess](t, f.client().request("GET", "/api/tools", nil, false)), "text-delimiter")
+	if row.Category != "旧分类" {
+		t.Fatalf("backfilled category not visible: %+v", row)
+	}
+}
