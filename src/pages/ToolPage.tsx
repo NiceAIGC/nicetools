@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BreadcrumbItem, Breadcrumbs, Button, Chip, Spinner } from "@heroui/react";
+import { BreadcrumbItem, Breadcrumbs, Chip, Spinner } from "@heroui/react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getComponent, type ToolMeta } from "../tools/registry";
 import { api, ApiError, type ToolAccess } from "../api/client";
@@ -10,10 +10,9 @@ type Gate = { id: string; identity: string; status: "ok" | "hidden" | "denied" |
 export default function ToolPage() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { session, tools, loading, error, refresh } = useAuth();
+  const { session, tools, loading, error } = useAuth();
   const identity = session?.user ? String(session.user.id) : "guest";
   const [gate, setGate] = useState<Gate | null>(null);
-  const [retry, setRetry] = useState(0);
   const permitted = tools?.find(item => item.id === id);
   const component = id ? getComponent(id) : undefined;
   const tool: ToolMeta | undefined =
@@ -41,18 +40,17 @@ export default function ToolPage() {
       if (live) setGate({ id, identity, status: e instanceof ApiError && e.status === 404 ? "hidden" : e instanceof ApiError && e.status === 403 ? "denied" : "error" });
     });
     return () => { live = false; };
-  }, [hasTool, id, identity, loading, error, canUse, retry]);
-  if (!tool) return <NotFound />;
-  if (loading) return <Spinner label="验证工具权限…" />;
-  if (error || !tools) return <div className="space-y-3"><p role="alert" className="text-danger">{error || "无法获取权限"}</p><Button onPress={() => void refresh()}>重新连接</Button></div>;
+  }, [hasTool, id, identity, loading, error, canUse]);
+
+  if (!component) return <NotFound />;
   const status = gate?.id === id && gate.identity === identity ? gate.status : null;
-  if (!permitted || status === "hidden") return <NotFound />;
-  if (!canUse || status === "denied") return <div className="space-y-4 rounded-large border border-default-200 bg-background p-6">
-    <h1 className="text-xl font-semibold">{tool.name}</h1><p role="alert" className="text-default-500">此工具可见，但当前没有使用权限或已停用。请联系管理员授权。</p>
-    <div className="flex gap-3">{!session?.user && <Button color="primary" onPress={() => navigate(`/login?next=${encodeURIComponent(`/tools/${id}`)}`)}>登录账号</Button>}<Button variant="bordered" onPress={() => navigate("/")}>返回工具</Button></div>
-  </div>;
-  if (status === "error") return <div className="space-y-3"><p role="alert">无法验证工具权限。</p><Button onPress={() => { void refresh(); setRetry(value => value + 1); }}>重试</Button></div>;
-  if (status !== "ok") return <Spinner label="验证工具权限…" />;
+  if (error || status === "error") return <p role="alert" className="py-20 text-center text-sm text-default-500">加载失败，请稍后重试</p>;
+  // 加载与校验中只转圈，不展示任何权限相关界面。
+  if (loading || !tools || (canUse && status === null)) return <div className="flex justify-center py-24"><Spinner /></div>;
+  if (!tool || !canUse || status === "denied" || status === "hidden") {
+    return <p role="alert" className="py-20 text-center text-sm text-default-500">暂无该工具的使用权限</p>;
+  }
+
   const Component = tool.component;
   return <div className="flex min-w-0 flex-col gap-6">
     <Breadcrumbs size="sm"><BreadcrumbItem onPress={() => navigate("/")}>全部工具</BreadcrumbItem><BreadcrumbItem onPress={() => navigate(`/?category=${encodeURIComponent(tool.category)}`)}>{tool.category}</BreadcrumbItem><BreadcrumbItem>{tool.name}</BreadcrumbItem></Breadcrumbs>
