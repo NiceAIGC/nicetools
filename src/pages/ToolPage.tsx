@@ -29,8 +29,10 @@ export default function ToolPage() {
         }
       : undefined;
   const canUse = !!permitted?.can_use;
+  // tool 每次渲染都是新对象；副作用只依赖稳定的原始值，否则 /access 会被无限重放。
+  const hasTool = !!tool;
   useEffect(() => {
-    if (!tool || loading || error || !canUse) return;
+    if (!hasTool || loading || error || !canUse) return;
     let live = true;
     setGate(null);
     api<ToolAccess>(`/tools/${encodeURIComponent(id)}/access`).then(() => {
@@ -39,7 +41,7 @@ export default function ToolPage() {
       if (live) setGate({ id, identity, status: e instanceof ApiError && e.status === 404 ? "hidden" : e instanceof ApiError && e.status === 403 ? "denied" : "error" });
     });
     return () => { live = false; };
-  }, [tool, id, identity, loading, error, canUse, retry]);
+  }, [hasTool, id, identity, loading, error, canUse, retry]);
   if (!tool) return <NotFound />;
   if (loading) return <Spinner label="验证工具权限…" />;
   if (error || !tools) return <div className="space-y-3"><p role="alert" className="text-danger">{error || "无法获取权限"}</p><Button onPress={() => void refresh()}>重新连接</Button></div>;
