@@ -9,6 +9,9 @@ NiceTools 是一个带后台管理和细粒度权限控制的在线工具集。�
 - Go 1.26 + Gin + GORM + SQLite
 - 单 Docker 容器：Go 服务提供 API、静态前端和受权限保护的工具代码资源
 
+界面组件一律使用 HeroUI 原生组件，除非单独指定；不引入第二个组件库。
+HeroUI 没有的控件（如取色器）用原生元素兜底，并在代码注释中说明原因。
+
 界面使用 HeroUI 原生 Navbar、头像账户菜单和 Tabs；管理后台在桌面使用左侧导航，移动端使用横向栏目切换，搜索和账号操作均保留。
 头部使用工具箱标志；品牌和账户操作区保留实际宽度，搜索区只占剩余空间，窄屏将搜索移至下一行。
 
@@ -33,9 +36,13 @@ NiceTools 是一个带后台管理和细粒度权限控制的在线工具集。�
 | 分类 CRUD、工具信息、恢复默认 | `backend/internal/service/categories.go` |
 | 工具策略与访问判定（游客/会员/组） | `backend/internal/service/permissions.go` |
 | 目录播种与旧库迁移 | `backend/internal/store/store.go` |
+| 工具后端模块契约与注册表 | `backend/internal/module/`、`backend/internal/tools/` |
 | 后台 REST 接口 | `backend/internal/httpapi/admin.go` |
 | 前端展示信息消费 | `src/pages/Home.tsx`、`src/pages/ToolPage.tsx` |
 | 后台管理界面 | `src/pages/Admin.tsx`、`src/components/admin/` |
+
+带后端的工具以模块形式挂在 `/api/tools/<id>/` 下，自动继承平台的访问策略与 CSRF 体系，
+表结构由各模块自己迁移。分层、模块契约、表命名与行为约定见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 本地开发
 
@@ -102,6 +109,16 @@ sh deploy.sh
 3. 执行 `pnpm build`。Vite 会按目录生成懒加载资源和 `dist/tool-assets.json`，Go 服务据此保护工具代码。
 4. 部署后工具出现在「后台 → 工具管理」，展示信息可继续在后台调整。代码目录清单（`store.initiallyPublic`）之外的新工具默认对所有人关闭，需在「配置权限」中打开。
 
+工具需要后端时，在上面基础上：
+
+1. `catalog.json` 条目加 `"backend": true`。
+2. 在 `backend/internal/tools/<id>/` 实现 `module.Module` 接口（表迁移 + 路由），
+   并在 `internal/tools/tools.go` 的 `All()` 注册。
+3. 前端通过 `toolApi(id, path)` 调用 `/api/tools/<id>/`；访问策略、CSRF、审计由平台统一处理。
+
+启动时会校验模块与 `catalog.json` 的双向对齐，缺任一侧直接拒绝启动。详细规范见
+[ARCHITECTURE.md](ARCHITECTURE.md)。
+
 首页搜索、分类导航和路由会自动读取后台数据，标签参与搜索，工具页面路由为 `/tools/<id>`。
 
 ## 现有工具
@@ -116,3 +133,4 @@ sh deploy.sh
 | 🔎 JSON 值提取工具 | 逐行解析 JSON 对象并提取指定顶层键 |
 | ✂️ 多行文本分隔工具 | 按自定义分隔符拆分多行文本并按索引重排拼接 |
 | 📠 文档转扫描件 | PDF、图片、Word、TXT 转带扫描质感的 PDF，支持旋转、噪点、泛黄、黑白；方案保存在本机，预览可放大，文件名带时间戳 |
+| 🪪 名片制作 | 水印回纹风格名片：内容逐项可显隐，版式/字体/配色/字号/水印全可配置，编辑与名片夹保存在本机，导出 PNG/JPG 最高 3 倍图 |
