@@ -19,6 +19,8 @@ export interface ToolMeta {
   category: string;
   /** 标签 */
   tags: string[];
+  /** 是否带后端模块（catalog.json 中 backend: true）；启动时后端校验模块与目录对齐 */
+  backend?: boolean;
   /** 懒加载的工具组件 */
   component: LazyExoticComponent<ComponentType>;
 }

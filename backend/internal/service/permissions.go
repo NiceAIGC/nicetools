@@ -22,9 +22,9 @@ type ToolAccess struct {
 }
 
 type RuleInput struct {
-	GroupID uint   `json:"group_id"`
-	Visible *bool  `json:"visible"`
-	Use     *bool  `json:"use"`
+	GroupID uint  `json:"group_id"`
+	Visible *bool `json:"visible"`
+	Use     *bool `json:"use"`
 }
 
 type PolicyInput struct {
@@ -134,19 +134,19 @@ func (s *Service) Policies() ([]ToolPolicy, error) {
 func (s *Service) SavePolicy(actorID uint, id string, input PolicyInput) (ToolPolicy, error) {
 	var out ToolPolicy
 	if (input.GuestUse && !input.GuestVisible) || (input.MemberUse && !input.MemberVisible) || len(input.GroupRules) > 1000 {
-		return out, problem(400, "可用须同时可见，或用户组规则过多")
+		return out, Problem(400, "可用须同时可见，或用户组规则过多")
 	}
 	seen := make(map[uint]bool, len(input.GroupRules))
 	ids := make([]uint, 0, len(input.GroupRules))
 	rules := make([]model.GroupRule, 0, len(input.GroupRules))
 	for _, rule := range input.GroupRules {
 		if seen[rule.GroupID] || rule.GroupID == 0 {
-			return out, problem(400, "用户组规则重复或无效")
+			return out, Problem(400, "用户组规则重复或无效")
 		}
 		seen[rule.GroupID] = true
 		ids = append(ids, rule.GroupID)
 		if rule.Use != nil && *rule.Use && (rule.Visible == nil || !*rule.Visible) {
-			return out, problem(400, "用户组允许使用时，必须同时允许可见")
+			return out, Problem(400, "用户组允许使用时，必须同时允许可见")
 		}
 		if rule.Visible != nil || rule.Use != nil {
 			rules = append(rules, model.GroupRule{ToolID: id, GroupID: rule.GroupID, Visible: rule.Visible, Use: rule.Use})
@@ -159,7 +159,7 @@ func (s *Service) SavePolicy(actorID uint, id string, input PolicyInput) (ToolPo
 		}
 		var tool model.Tool
 		if err := tx.First(&tool, "id = ?", id).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		if len(seen) > 0 {
 			var count int64
@@ -167,7 +167,7 @@ func (s *Service) SavePolicy(actorID uint, id string, input PolicyInput) (ToolPo
 				return err
 			}
 			if count != int64(len(seen)) {
-				return problem(400, "用户组不存在")
+				return Problem(400, "用户组不存在")
 			}
 		}
 		tool.Enabled, tool.GuestVisible, tool.GuestUse, tool.MemberVisible, tool.MemberUse =
@@ -183,7 +183,7 @@ func (s *Service) SavePolicy(actorID uint, id string, input PolicyInput) (ToolPo
 				return err
 			}
 		}
-		if err := audit(tx, actor.Username, "tool.policy", id); err != nil {
+		if err := Audit(tx, actor.Username, "tool.policy", id); err != nil {
 			return err
 		}
 		return nil
@@ -205,7 +205,7 @@ func (s *Service) policyByID(id string) (ToolPolicy, error) {
 			return item, nil
 		}
 	}
-	return ToolPolicy{}, problem(404, "记录不存在")
+	return ToolPolicy{}, Problem(404, "记录不存在")
 }
 
 // 每个旗标分别决策：显式拒绝 > 显式允许 > 会员默认；可用最终与可见相交。
@@ -273,7 +273,7 @@ func (s *Service) Tools(user *model.User) ([]ToolAccess, error) {
 func (s *Service) Access(id string, user *model.User) (ToolAccess, error) {
 	var tool model.Tool
 	if err := s.S.DB.First(&tool, "id = ?", id).Error; err != nil {
-		return ToolAccess{}, dbError(err)
+		return ToolAccess{}, DBError(err)
 	}
 	rules := []model.GroupRule{}
 	if user != nil {
@@ -283,10 +283,10 @@ func (s *Service) Access(id string, user *model.User) (ToolAccess, error) {
 	}
 	visible, usable := accessFor(tool, user, rules)
 	if !visible {
-		return ToolAccess{}, problem(404, "工具不存在")
+		return ToolAccess{}, Problem(404, "工具不存在")
 	}
 	if !usable {
-		return ToolAccess{}, problem(403, "没有使用权限或工具已停用")
+		return ToolAccess{}, Problem(403, "没有使用权限或工具已停用")
 	}
 	_, byID, err := s.loadTools()
 	if err != nil {
@@ -294,4 +294,3 @@ func (s *Service) Access(id string, user *model.User) (ToolAccess, error) {
 	}
 	return toolAccess(tool, categoryName(byID, tool.CategoryID), true), nil
 }
-

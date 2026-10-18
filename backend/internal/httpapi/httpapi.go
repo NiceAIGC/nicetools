@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,12 +18,16 @@ import (
 	"gorm.io/gorm"
 	"nicetools/backend/internal/config"
 	"nicetools/backend/internal/model"
+	"nicetools/backend/internal/module"
 	"nicetools/backend/internal/service"
+	"nicetools/backend/internal/validate"
 )
 
 type API struct {
 	S          *service.Service
 	C          config.Config
+	deps       module.Deps
+	modules    []module.Module
 	assets     map[string][]string
 	staticRoot string
 	initErr    error
@@ -36,8 +39,16 @@ type attempt struct {
 	expires time.Time
 }
 
-func New(s *service.Service, c config.Config) *API {
-	a := &API{S: s, C: c, assets: map[string][]string{}, attempts: map[string]attempt{}}
+func New(s *service.Service, c config.Config, db *gorm.DB, modules []module.Module) *API {
+	a := &API{S: s, C: c, deps: module.Deps{DB: db, Service: s, Config: c}, modules: modules, assets: map[string][]string{}, attempts: map[string]attempt{}}
+	seen := make(map[string]bool, len(modules))
+	for _, m := range modules {
+		if !validate.Slug.MatchString(m.ID()) || seen[m.ID()] {
+			a.initErr = errors.New("invalid or duplicate tool module: " + m.ID())
+			return a
+		}
+		seen[m.ID()] = true
+	}
 	a.staticRoot, a.initErr = filepath.Abs(c.StaticDir)
 	if a.initErr != nil {
 		return a
@@ -101,6 +112,12 @@ func (a *API) Run() *gin.Engine {
 	write.PUT("/tools/:id", a.savePolicy)
 	write.PUT("/tools/:id/meta", a.saveToolMeta)
 	write.POST("/tools/:id/reset", a.resetToolMeta)
+	// 工具后端模块：read 带「可见且可用」策略判定，write 再加 CSRF 校验。
+	for _, m := range a.modules {
+		read := r.Group("/api/tools/"+m.ID(), a.requireToolUse(m.ID()))
+		write := read.Group("", a.csrf)
+		m.Register(read, write, a.deps)
+	}
 	r.NoRoute(a.static)
 	return r
 }
@@ -118,15 +135,7 @@ func (a *API) headers(c *gin.Context) {
 	}
 	c.Next()
 }
-func (a *API) fail(c *gin.Context, err error) {
-	var problem *service.Error
-	if errors.As(err, &problem) {
-		c.AbortWithStatusJSON(problem.Status, gin.H{"error": problem.Message})
-		return
-	}
-	log.Printf("request %s %s: %v", c.Request.Method, c.FullPath(), err)
-	c.AbortWithStatusJSON(500, gin.H{"error": "服务暂时不可用"})
-}
+func (a *API) fail(c *gin.Context, err error) { module.Fail(c, err) }
 func reject(c *gin.Context, status int, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": message})
 }
@@ -162,6 +171,27 @@ func (a *API) requireAdmin(c *gin.Context) {
 	c.Next()
 }
 func current(c *gin.Context) *model.User { return c.MustGet("user").(*model.User) }
+
+// requireToolUse 复用 access 判定拦截工具后端请求：
+// 不可见按 404、可见但不可用按 403 拒绝；通过后写入登录用户（游客为 nil），
+// 模块 handler 用 module.CurrentUser 读取。
+func (a *API) requireToolUse(id string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, err := a.user(c)
+		if err != nil {
+			a.fail(c, err)
+			return
+		}
+		if _, err := a.S.Access(id, user); err != nil {
+			a.fail(c, err)
+			return
+		}
+		if user != nil {
+			c.Set("user", user)
+		}
+		c.Next()
+	}
+}
 func (a *API) csrf(c *gin.Context) {
 	if c.GetHeader("Sec-Fetch-Site") == "cross-site" {
 		reject(c, 403, "跨站请求被拒绝")

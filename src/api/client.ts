@@ -28,3 +28,10 @@ export async function api<T>(path:string, init:RequestInit={}) :Promise<T> {
  return data as T;
 }
 export const json=(method:string,body:unknown):RequestInit=>({method,body:JSON.stringify(body)});
+
+const toolSlug=/^[a-z0-9][a-z0-9-]{0,63}$/;
+/** 工具后端接口：拼到 /api/tools/<id><path>，复用统一鉴权与 CSRF。仅 catalog 中 backend:true 的工具使用。 */
+export function toolApi<T>(id:string, path:string, init:RequestInit={}):Promise<T> {
+ if(!toolSlug.test(id)||!path.startsWith('/')) throw new Error('工具接口路径无效');
+ return api<T>(`/tools/${id}${path}`,init);
+}

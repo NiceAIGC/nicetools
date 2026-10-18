@@ -32,17 +32,17 @@ type User struct {
 // Tool 的展示信息（名称/图标/说明/分类/标签/顺序）由后台维护，
 // 代码目录只负责种子默认值；访问策略同样是后台数据。
 type Tool struct {
-	ID          string     `gorm:"primaryKey"`
-	Name        string
-	Description string
-	Emoji       string
-	Tags        string
-	CategoryID  *uint      `gorm:"index"`
-	Category    *Category  `gorm:"foreignKey:CategoryID;constraint:OnDelete:SET NULL" json:"-"`
-	Sort        int
-	Enabled     bool
-	GuestVisible bool
-	GuestUse     bool
+	ID            string `gorm:"primaryKey"`
+	Name          string
+	Description   string
+	Emoji         string
+	Tags          string
+	CategoryID    *uint     `gorm:"index"`
+	Category      *Category `gorm:"foreignKey:CategoryID;constraint:OnDelete:SET NULL" json:"-"`
+	Sort          int
+	Enabled       bool
+	GuestVisible  bool
+	GuestUse      bool
 	MemberVisible bool
 	MemberUse     bool
 }
@@ -56,8 +56,8 @@ type GroupRule struct {
 }
 
 type Session struct {
-	TokenHash string    `gorm:"primaryKey"`
-	UserID    *uint     `gorm:"index"`
+	TokenHash string `gorm:"primaryKey"`
+	UserID    *uint  `gorm:"index"`
 	CSRFHash  string
 	ExpiresAt time.Time `gorm:"index"`
 	CreatedAt time.Time
@@ -80,4 +80,6 @@ type Catalog struct {
 	Emoji       string   `json:"emoji"`
 	Category    string   `json:"category"`
 	Tags        []string `json:"tags"`
+	// Backend 声明该工具带后端模块；启动时校验模块与目录双向对齐。
+	Backend bool `json:"backend"`
 }

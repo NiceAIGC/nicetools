@@ -6,7 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
-	"regexp"
+	"nicetools/backend/internal/validate"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,17 +35,22 @@ type Error struct {
 	Message string
 }
 
-func (e *Error) Error() string                 { return e.Message }
-func problem(status int, message string) error { return &Error{Status: status, Message: message} }
-func dbError(err error) error {
+func (e *Error) Error() string { return e.Message }
+
+// Problem 构造一个带 HTTP 状态的业务错误，httpapi 统一按状态码渲染。
+// 工具模块返回错误一律用它，不要在 handler 里直接写状态码。
+func Problem(status int, message string) error { return &Error{Status: status, Message: message} }
+
+// DBError 把 GORM 错误翻译成业务错误；非已知错误原样返回（按 500 处理）。
+func DBError(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return problem(404, "记录不存在")
+		return Problem(404, "记录不存在")
 	}
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return problem(409, "名称或用户名已存在")
+		return Problem(409, "名称或用户名已存在")
 	}
 	if errors.Is(err, gorm.ErrForeignKeyViolated) {
-		return problem(400, "关联的用户组或工具不存在")
+		return Problem(400, "关联的用户组或工具不存在")
 	}
 	return err
 }
@@ -123,7 +128,7 @@ func (s *Service) Login(username, password, previous string) (*model.User, strin
 	}
 	matches := bcrypt.CompareHashAndPassword(encoded, []byte(password)) == nil
 	if err != nil || user.Disabled || !matches {
-		return nil, "", "", problem(401, "用户名或密码错误")
+		return nil, "", "", Problem(401, "用户名或密码错误")
 	}
 	var token, csrf string
 	err = s.S.DB.Transaction(func(tx *gorm.DB) error {
@@ -132,7 +137,7 @@ func (s *Service) Login(username, password, previous string) (*model.User, strin
 			return err
 		}
 		if current.Disabled || current.PasswordHash != user.PasswordHash {
-			return problem(401, "用户名或密码错误")
+			return Problem(401, "用户名或密码错误")
 		}
 		var err error
 		token, err = randomToken()
@@ -154,7 +159,7 @@ func (s *Service) Login(username, password, previous string) (*model.User, strin
 		if err := tx.Create(&model.Session{TokenHash: hash(token), UserID: &user.ID, CSRFHash: hash(csrf), ExpiresAt: time.Now().Add(7 * 24 * time.Hour)}).Error; err != nil {
 			return err
 		}
-		return audit(tx, user.Username, "auth.login", user.Username)
+		return Audit(tx, user.Username, "auth.login", user.Username)
 	})
 	if user.Groups == nil {
 		user.Groups = []model.Group{}
@@ -163,26 +168,29 @@ func (s *Service) Login(username, password, previous string) (*model.User, strin
 }
 func (s *Service) Logout(token string) (string, string, error) { return s.Issue(nil, token) }
 
-var validUsername = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
-
 func passwordHash(password string) (string, error) {
 	if len(password) < 12 || len(password) > 72 {
-		return "", problem(400, "密码长度须为 12–72 字节")
+		return "", Problem(400, "密码长度须为 12–72 字节")
 	}
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	return string(b), err
 }
-func bounded(value string, max int) bool {
+
+// Bounded 校验字符串是合法 UTF-8 且长度（按字符）不超过 max。
+func Bounded(value string, max int) bool {
 	return utf8.ValidString(value) && utf8.RuneCountInString(value) <= max
 }
-func audit(tx *gorm.DB, actor, action, target string) error {
+
+// Audit 在同一事务内写审计记录。工具模块的创建/修改/删除动作必须调用，
+// action 命名 <toolid>.<动作>，如 docscan.job.delete。
+func Audit(tx *gorm.DB, actor, action, target string) error {
 	return tx.Create(&model.Audit{Actor: actor, Action: action, Target: target}).Error
 }
 func administrator(tx *gorm.DB, id uint) (*model.User, error) {
 	var user model.User
 	if err := tx.Where("id = ? AND disabled = ? AND role = ?", id, false, "admin").First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, problem(403, "需要管理员权限")
+			return nil, Problem(403, "需要管理员权限")
 		}
 		return nil, err
 	}
@@ -194,7 +202,7 @@ func loadUser(tx *gorm.DB, id uint) (model.User, error) {
 	if user.Groups == nil {
 		user.Groups = []model.Group{}
 	}
-	return user, dbError(err)
+	return user, DBError(err)
 }
 func (s *Service) Users() ([]model.User, error) {
 	users := []model.User{}
@@ -218,14 +226,14 @@ type UserInput struct {
 
 func validateUser(input *UserInput) error {
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
-	if !bounded(input.DisplayName, 64) || (input.Role != "admin" && input.Role != "user") {
-		return problem(400, "显示名称或角色无效")
+	if !Bounded(input.DisplayName, 64) || (input.Role != "admin" && input.Role != "user") {
+		return Problem(400, "显示名称或角色无效")
 	}
 	return nil
 }
 func groupsFor(tx *gorm.DB, ids []uint) ([]model.Group, error) {
 	if len(ids) > 100 {
-		return nil, problem(400, "用户组过多")
+		return nil, Problem(400, "用户组过多")
 	}
 	groups := []model.Group{}
 	if len(ids) == 0 {
@@ -234,7 +242,7 @@ func groupsFor(tx *gorm.DB, ids []uint) ([]model.Group, error) {
 	seen := make(map[uint]bool, len(ids))
 	for _, id := range ids {
 		if id == 0 || seen[id] {
-			return nil, problem(400, "用户组无效或重复")
+			return nil, Problem(400, "用户组无效或重复")
 		}
 		seen[id] = true
 	}
@@ -242,14 +250,14 @@ func groupsFor(tx *gorm.DB, ids []uint) ([]model.Group, error) {
 		return nil, err
 	}
 	if len(groups) != len(ids) {
-		return nil, problem(400, "用户组不存在")
+		return nil, Problem(400, "用户组不存在")
 	}
 	return groups, nil
 }
 func (s *Service) CreateUser(actorID uint, input UserInput) (model.User, error) {
 	var out model.User
-	if !validUsername.MatchString(input.Username) {
-		return out, problem(400, "用户名须为 3–32 位字母、数字或 _.-")
+	if !validate.Username.MatchString(input.Username) {
+		return out, Problem(400, "用户名须为 3–32 位字母、数字或 _.-")
 	}
 	if err := validateUser(&input); err != nil {
 		return out, err
@@ -269,9 +277,9 @@ func (s *Service) CreateUser(actorID uint, input UserInput) (model.User, error) 
 		}
 		user := model.User{Username: input.Username, DisplayName: input.DisplayName, PasswordHash: encoded, Role: input.Role, Disabled: input.Disabled, Groups: groups}
 		if err := tx.Create(&user).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
-		if err := audit(tx, actor.Username, "user.create", user.Username); err != nil {
+		if err := Audit(tx, actor.Username, "user.create", user.Username); err != nil {
 			return err
 		}
 		out, err = loadUser(tx, user.ID)
@@ -288,7 +296,7 @@ func lastAdmin(tx *gorm.DB, user model.User, newRole string, disabled bool) erro
 		return err
 	}
 	if count <= 1 {
-		return problem(409, "不能移除、禁用或降级最后一个启用的管理员")
+		return Problem(409, "不能移除、禁用或降级最后一个启用的管理员")
 	}
 	return nil
 }
@@ -327,7 +335,7 @@ func (s *Service) UpdateUser(actorID, id uint, input UserInput) (model.User, err
 			updates["password_hash"] = encoded
 		}
 		if err := tx.Model(&user).Updates(updates).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		if err := tx.Model(&user).Association("Groups").Replace(groups); err != nil {
 			return err
@@ -337,11 +345,11 @@ func (s *Service) UpdateUser(actorID, id uint, input UserInput) (model.User, err
 				return err
 			}
 		}
-		if err := audit(tx, actor.Username, "user.update", user.Username); err != nil {
+		if err := Audit(tx, actor.Username, "user.update", user.Username); err != nil {
 			return err
 		}
 		if encoded != "" {
-			if err := audit(tx, actor.Username, "user.password_reset", user.Username); err != nil {
+			if err := Audit(tx, actor.Username, "user.password_reset", user.Username); err != nil {
 				return err
 			}
 		}
@@ -357,7 +365,7 @@ func (s *Service) DeleteUser(actorID, id uint) error {
 			return err
 		}
 		if actorID == id {
-			return problem(409, "不能删除当前登录账号")
+			return Problem(409, "不能删除当前登录账号")
 		}
 		user, err := loadUser(tx, id)
 		if err != nil {
@@ -375,7 +383,7 @@ func (s *Service) DeleteUser(actorID, id uint) error {
 		if err := tx.Delete(&user).Error; err != nil {
 			return err
 		}
-		return audit(tx, actor.Username, "user.delete", user.Username)
+		return Audit(tx, actor.Username, "user.delete", user.Username)
 	})
 }
 func (s *Service) ChangePassword(id uint, current, password string) error {
@@ -385,10 +393,10 @@ func (s *Service) ChangePassword(id uint, current, password string) error {
 	}
 	var user model.User
 	if err := s.S.DB.First(&user, id).Error; err != nil {
-		return dbError(err)
+		return DBError(err)
 	}
 	if user.Disabled || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)) != nil {
-		return problem(400, "当前密码错误")
+		return Problem(400, "当前密码错误")
 	}
 	return s.S.DB.Transaction(func(tx *gorm.DB) error {
 		var live model.User
@@ -396,7 +404,7 @@ func (s *Service) ChangePassword(id uint, current, password string) error {
 			return err
 		}
 		if live.Disabled || live.PasswordHash != user.PasswordHash {
-			return problem(409, "账号状态已变化，请重新登录")
+			return Problem(409, "账号状态已变化，请重新登录")
 		}
 		if err := tx.Model(&live).Update("password_hash", encoded).Error; err != nil {
 			return err
@@ -404,7 +412,7 @@ func (s *Service) ChangePassword(id uint, current, password string) error {
 		if err := tx.Where("user_id = ?", id).Delete(&model.Session{}).Error; err != nil {
 			return err
 		}
-		return audit(tx, live.Username, "account.password", live.Username)
+		return Audit(tx, live.Username, "account.password", live.Username)
 	})
 }
 func (s *Service) Audits() ([]model.Audit, error) {

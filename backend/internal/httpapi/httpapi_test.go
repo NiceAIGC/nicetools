@@ -12,6 +12,7 @@ import (
 
 	"nicetools/backend/internal/config"
 	"nicetools/backend/internal/model"
+	"nicetools/backend/internal/module"
 	"nicetools/backend/internal/service"
 	"nicetools/backend/internal/store"
 )
@@ -31,7 +32,7 @@ type client struct {
 	csrf    string
 }
 
-func setup(t *testing.T) *fixture {
+func setup(t *testing.T, modules ...module.Module) *fixture {
 	t.Helper()
 	root := t.TempDir()
 	static := filepath.Join(root, "static")
@@ -56,7 +57,12 @@ func setup(t *testing.T) *fixture {
 	if err := db.Sync(catalog, "admin", adminPassword); err != nil {
 		t.Fatal(err)
 	}
-	api := New(service.New(db), cfg)
+	for _, m := range modules {
+		if err := m.Migrate(db.DB); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := New(service.New(db), cfg, db.DB, modules)
 	if err := api.Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +315,7 @@ func TestMissingManifestRefusesServing(t *testing.T) {
 	if err := os.Remove(filepath.Join(f.config.StaticDir, "tool-assets.json")); err != nil {
 		t.Fatal(err)
 	}
-	api := New(service.New(f.store), f.config)
+	api := New(service.New(f.store), f.config, f.store.DB, nil)
 	if api.Err() == nil {
 		t.Fatal("missing manifest must fail startup")
 	}

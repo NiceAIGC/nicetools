@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 	"nicetools/backend/internal/config"
 	"nicetools/backend/internal/model"
+	"nicetools/backend/internal/validate"
 )
 
 type Store struct {
@@ -45,9 +45,6 @@ func Open(c config.Config) (*Store, error) {
 	}
 	return &Store{DB: db, catalog: map[string]model.Catalog{}}, nil
 }
-
-var slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-var username = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
 
 // initiallyPublic 决定「随版本默认开放」的工具；清单外的新工具默认对所有人关闭。
 var initiallyPublic = map[string]bool{
@@ -124,7 +121,7 @@ func (s *Store) Sync(path, adminUser, adminPass string) error {
 	defaults := make(map[string]model.Catalog, len(catalog))
 	categorySort := make(map[string]int)
 	for _, tool := range catalog {
-		if !slug.MatchString(tool.ID) || strings.TrimSpace(tool.Name) == "" || seen[tool.ID] {
+		if !validate.Slug.MatchString(tool.ID) || strings.TrimSpace(tool.Name) == "" || seen[tool.ID] {
 			return fmt.Errorf("invalid or duplicate catalog tool: %s", tool.ID)
 		}
 		if tool.Category != "" {
@@ -144,7 +141,7 @@ func (s *Store) Sync(path, adminUser, adminPass string) error {
 			return err
 		}
 		if count == 0 {
-			if !username.MatchString(adminUser) || len(adminPass) < 12 || len(adminPass) > 72 {
+			if !validate.Username.MatchString(adminUser) || len(adminPass) < 12 || len(adminPass) > 72 {
 				return errors.New("bootstrap requires ADMIN_USERNAME (3..32 letters/digits/_.-) and ADMIN_PASSWORD (12..72 bytes)")
 			}
 			hash, err := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
@@ -202,6 +199,9 @@ func (s *Store) CatalogDefault(id string) (model.Catalog, bool) {
 	meta, ok := s.catalog[id]
 	return meta, ok
 }
+
+// CatalogEntries 返回代码目录（Sync 之后可用），供启动时校验工具模块对齐。
+func (s *Store) CatalogEntries() map[string]model.Catalog { return s.catalog }
 
 func (s *Store) Close() error {
 	db, err := s.DB.DB()

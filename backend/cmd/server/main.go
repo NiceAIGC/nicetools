@@ -14,8 +14,10 @@ import (
 
 	"nicetools/backend/internal/config"
 	"nicetools/backend/internal/httpapi"
+	"nicetools/backend/internal/module"
 	"nicetools/backend/internal/service"
 	"nicetools/backend/internal/store"
+	"nicetools/backend/internal/tools"
 )
 
 func main() {
@@ -53,7 +55,17 @@ func run() error {
 	if err := db.Sync(c.CatalogPath, c.AdminUsername, c.AdminPassword); err != nil {
 		return err
 	}
-	api := httpapi.New(service.New(db), c)
+	// 工具后端模块：先校验与 catalog 的对齐关系，再迁移各自的表，最后装配路由。
+	modules := tools.All()
+	if err := module.VerifyCatalog(modules, db.CatalogEntries()); err != nil {
+		return err
+	}
+	for _, m := range modules {
+		if err := m.Migrate(db.DB); err != nil {
+			return fmt.Errorf("migrate tool module %s: %w", m.ID(), err)
+		}
+	}
+	api := httpapi.New(service.New(db), c, db.DB, modules)
 	if err := api.Err(); err != nil {
 		return err
 	}

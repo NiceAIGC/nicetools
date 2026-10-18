@@ -22,8 +22,8 @@ func (s *Service) SaveGroup(actorID uint, id uint, input GroupInput) (model.Grou
 	var out model.Group
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
-	if input.Name == "" || !bounded(input.Name, 64) || !bounded(input.Description, 500) {
-		return out, problem(400, "组名须为 1–64 字，说明不超过 500 字")
+	if input.Name == "" || !Bounded(input.Name, 64) || !Bounded(input.Description, 500) {
+		return out, Problem(400, "组名须为 1–64 字，说明不超过 500 字")
 	}
 	err := s.S.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := administrator(tx, actorID)
@@ -34,19 +34,19 @@ func (s *Service) SaveGroup(actorID uint, id uint, input GroupInput) (model.Grou
 		if id == 0 {
 			out = model.Group{Name: input.Name, Description: input.Description}
 			if err := tx.Create(&out).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 		} else {
 			if err := tx.First(&out, id).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 			out.Name, out.Description = input.Name, input.Description
 			if err := tx.Save(&out).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 			action = "group.update"
 		}
-		return audit(tx, actor.Username, action, out.Name)
+		return Audit(tx, actor.Username, action, out.Name)
 	})
 	return out, err
 }
@@ -60,7 +60,7 @@ func (s *Service) DeleteGroup(actorID uint, id uint) error {
 		}
 		var group model.Group
 		if err := tx.First(&group, id).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		if err := tx.Where("group_id = ?", id).Delete(&model.GroupRule{}).Error; err != nil {
 			return err
@@ -71,6 +71,6 @@ func (s *Service) DeleteGroup(actorID uint, id uint) error {
 		if err := tx.Delete(&group).Error; err != nil {
 			return err
 		}
-		return audit(tx, actor.Username, "group.delete", group.Name)
+		return Audit(tx, actor.Username, "group.delete", group.Name)
 	})
 }

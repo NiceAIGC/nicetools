@@ -26,8 +26,8 @@ func (s *Service) SaveCategory(actorID uint, id uint, input CategoryInput) (mode
 	var out model.Category
 	input.Name = strings.TrimSpace(input.Name)
 	input.Description = strings.TrimSpace(input.Description)
-	if input.Name == "" || !bounded(input.Name, 32) || !bounded(input.Description, 200) {
-		return out, problem(400, "分类名须为 1–32 字，说明不超过 200 字")
+	if input.Name == "" || !Bounded(input.Name, 32) || !Bounded(input.Description, 200) {
+		return out, Problem(400, "分类名须为 1–32 字，说明不超过 200 字")
 	}
 	err := s.S.DB.Transaction(func(tx *gorm.DB) error {
 		actor, err := administrator(tx, actorID)
@@ -42,19 +42,19 @@ func (s *Service) SaveCategory(actorID uint, id uint, input CategoryInput) (mode
 			}
 			out = model.Category{Name: input.Name, Description: input.Description, Sort: next}
 			if err := tx.Create(&out).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 		} else {
 			if err := tx.First(&out, id).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 			out.Name, out.Description = input.Name, input.Description
 			if err := tx.Save(&out).Error; err != nil {
-				return dbError(err)
+				return DBError(err)
 			}
 			action = "category.update"
 		}
-		return audit(tx, actor.Username, action, out.Name)
+		return Audit(tx, actor.Username, action, out.Name)
 	})
 	return out, err
 }
@@ -77,7 +77,7 @@ func (s *Service) DeleteCategory(actorID uint, id uint) error {
 		}
 		var category model.Category
 		if err := tx.First(&category, id).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		if err := tx.Model(&model.Tool{}).Where("category_id = ?", id).Update("category_id", nil).Error; err != nil {
 			return err
@@ -85,7 +85,7 @@ func (s *Service) DeleteCategory(actorID uint, id uint) error {
 		if err := tx.Delete(&category).Error; err != nil {
 			return err
 		}
-		return audit(tx, actor.Username, "category.delete", category.Name)
+		return Audit(tx, actor.Username, "category.delete", category.Name)
 	})
 }
 
@@ -101,19 +101,19 @@ func (s *Service) ReorderCategories(actorID uint, ids []uint) error {
 			return err
 		}
 		if len(ids) != len(categories) {
-			return problem(400, "分类顺序不完整")
+			return Problem(400, "分类顺序不完整")
 		}
 		position := make(map[uint]int, len(ids))
 		for index, id := range ids {
 			if _, ok := position[id]; ok {
-				return problem(400, "分类顺序包含重复项")
+				return Problem(400, "分类顺序包含重复项")
 			}
 			position[id] = index
 		}
 		for _, category := range categories {
 			index, ok := position[category.ID]
 			if !ok {
-				return problem(400, "分类顺序包含未知分类")
+				return Problem(400, "分类顺序包含未知分类")
 			}
 			if category.Sort == index*10 {
 				continue
@@ -122,7 +122,7 @@ func (s *Service) ReorderCategories(actorID uint, ids []uint) error {
 				return err
 			}
 		}
-		return audit(tx, actor.Username, "category.reorder", fmt.Sprintf("%d 个分类", len(categories)))
+		return Audit(tx, actor.Username, "category.reorder", fmt.Sprintf("%d 个分类", len(categories)))
 	})
 }
 
@@ -139,26 +139,26 @@ func validateMeta(input *ToolMetaInput) error {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Emoji = strings.TrimSpace(input.Emoji)
 	input.Description = strings.TrimSpace(input.Description)
-	if input.Name == "" || !bounded(input.Name, 60) {
-		return problem(400, "工具名称须为 1–60 字")
+	if input.Name == "" || !Bounded(input.Name, 60) {
+		return Problem(400, "工具名称须为 1–60 字")
 	}
 	if input.Emoji == "" || utf8.RuneCountInString(input.Emoji) > 8 {
-		return problem(400, "Logo/图标须为 1–8 个字符")
+		return Problem(400, "Logo/图标须为 1–8 个字符")
 	}
-	if !bounded(input.Description, 300) {
-		return problem(400, "工具说明不超过 300 字")
+	if !Bounded(input.Description, 300) {
+		return Problem(400, "工具说明不超过 300 字")
 	}
 	if len(input.Tags) > 12 {
-		return problem(400, "标签最多 12 个")
+		return Problem(400, "标签最多 12 个")
 	}
 	for _, tag := range input.Tags {
 		tag = strings.TrimSpace(tag)
-		if tag == "" || !bounded(tag, 24) {
-			return problem(400, "每个标签须为 1–24 字")
+		if tag == "" || !Bounded(tag, 24) {
+			return Problem(400, "每个标签须为 1–24 字")
 		}
 	}
 	if input.Sort < 0 || input.Sort > 9999 {
-		return problem(400, "排序值为 0–9999")
+		return Problem(400, "排序值为 0–9999")
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func (s *Service) SaveToolMeta(actorID uint, id string, input ToolMetaInput) (To
 		}
 		var tool model.Tool
 		if err := tx.First(&tool, "id = ?", id).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		if input.CategoryID != nil {
 			var count int64
@@ -195,7 +195,7 @@ func (s *Service) SaveToolMeta(actorID uint, id string, input ToolMetaInput) (To
 				return err
 			}
 			if count == 0 {
-				return problem(400, "分类不存在")
+				return Problem(400, "分类不存在")
 			}
 		}
 		tool.Name, tool.Emoji, tool.Description = input.Name, input.Emoji, input.Description
@@ -203,7 +203,7 @@ func (s *Service) SaveToolMeta(actorID uint, id string, input ToolMetaInput) (To
 		if err := tx.Save(&tool).Error; err != nil {
 			return err
 		}
-		return audit(tx, actor.Username, "tool.meta", tool.ID)
+		return Audit(tx, actor.Username, "tool.meta", tool.ID)
 	})
 	if err != nil {
 		return ToolPolicy{}, err
@@ -215,7 +215,7 @@ func (s *Service) SaveToolMeta(actorID uint, id string, input ToolMetaInput) (To
 func (s *Service) ResetToolMeta(actorID uint, id string) (ToolPolicy, error) {
 	meta, ok := s.S.CatalogDefault(id)
 	if !ok {
-		return ToolPolicy{}, problem(404, "代码目录中没有该工具的默认信息")
+		return ToolPolicy{}, Problem(404, "代码目录中没有该工具的默认信息")
 	}
 	tags, err := json.Marshal(meta.Tags)
 	if err != nil {
@@ -228,7 +228,7 @@ func (s *Service) ResetToolMeta(actorID uint, id string) (ToolPolicy, error) {
 		}
 		var tool model.Tool
 		if err := tx.First(&tool, "id = ?", id).Error; err != nil {
-			return dbError(err)
+			return DBError(err)
 		}
 		next, err := nextCategorySort(tx)
 		if err != nil {
@@ -248,7 +248,7 @@ func (s *Service) ResetToolMeta(actorID uint, id string) (ToolPolicy, error) {
 		if err := tx.Save(&tool).Error; err != nil {
 			return err
 		}
-		return audit(tx, actor.Username, "tool.meta_reset", tool.ID)
+		return Audit(tx, actor.Username, "tool.meta_reset", tool.ID)
 	})
 	if err != nil {
 		return ToolPolicy{}, err
