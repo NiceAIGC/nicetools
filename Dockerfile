@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM node:22-bookworm-slim AS frontend
+# 国内部署可在 .env 设 NPM_REGISTRY=https://registry.npmmirror.com。
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY} NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 WORKDIR /build
 RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 COPY package.json pnpm-lock.yaml ./
