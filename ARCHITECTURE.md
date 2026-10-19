@@ -56,6 +56,9 @@ type Module interface {
 3. `internal/tools/tools.go` 的 `All()` 注册一行。
 4. 模块带 `<id>_test.go`，只测自己的路由与边界（参照 `httpapi/module_test.go` 的 fakeModule）。
 
+参考实现：`internal/tools/llmadmit/`（大模型准入测试）——模块内再按「契约子包 + 实现子包」
+分层（`suite/` 抽象与客户端、`k3/` 标准实现），适合一个工具承载多套可插拔标准的场景。
+
 ## 3. 数据表规范
 
 | 规则 | 内容 |

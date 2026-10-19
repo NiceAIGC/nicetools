@@ -8,6 +8,7 @@ import (
 
 	"nicetools/backend/internal/module"
 	"nicetools/backend/internal/service"
+	"nicetools/backend/internal/tools/llmadmit"
 )
 
 // futureRow 是 fakeModule 的私有表，遵循 tool_<id>_ 前缀约定。
@@ -118,3 +119,26 @@ type badModule struct{ id string }
 func (m badModule) ID() string                                           { return m.id }
 func (m badModule) Migrate(db *gorm.DB) error                            { return nil }
 func (m badModule) Register(read, write *gin.RouterGroup, d module.Deps) {}
+
+// 真实模块（llm-admission）：默认不可见 → 404；开放游客后 suites 可访问。
+func TestLlmAdmissionModulePolicy(t *testing.T) {
+	f := setup(t, llmadmit.New())
+	guest := f.client()
+	expect(t, guest.request("GET", "/api/session", nil, false), 200)
+	expect(t, guest.request("GET", "/api/tools/llm-admission/suites", nil, false), 404)
+
+	admin := f.admin()
+	policy := service.PolicyInput{Enabled: true, GuestVisible: true, GuestUse: true, MemberVisible: true, MemberUse: true}
+	expect(t, admin.request("PUT", "/api/admin/tools/llm-admission", policy, true), 200)
+
+	res := guest.request("GET", "/api/tools/llm-admission/suites", nil, false)
+	expect(t, res, 200)
+	suites := decode[[]struct {
+		ID string `json:"id"`
+	}](t, res)
+	if len(suites) == 0 || suites[0].ID != "k3-v1" {
+		t.Fatalf("suites=%+v", suites)
+	}
+	// 写接口走 CSRF：无 token 403。
+	expect(t, guest.request("POST", "/api/tools/llm-admission/runs", map[string]any{"base_url": "http://x", "api_key": "k"}, false), 403)
+}

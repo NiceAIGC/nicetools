@@ -46,7 +46,7 @@ func setup(t *testing.T, modules ...module.Module) *fixture {
 		}
 	}
 	catalog := filepath.Join(root, "catalog.json")
-	if err := os.WriteFile(catalog, []byte(`[{"id":"text-delimiter","name":"Text","description":"d","emoji":"x","category":"text","tags":[]},{"id":"future-tool","name":"Future","description":"d","emoji":"x","category":"text","tags":[]}]`), 0600); err != nil {
+	if err := os.WriteFile(catalog, []byte(`[{"id":"text-delimiter","name":"Text","description":"d","emoji":"x","category":"text","tags":[]},{"id":"future-tool","name":"Future","description":"d","emoji":"x","category":"text","tags":[]},{"id":"llm-admission","name":"LLM","description":"d","emoji":"x","category":"ai","tags":[],"backend":true}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Config{Port: "8080", DBPath: filepath.Join(root, "db.sqlite"), StaticDir: static, CatalogPath: catalog, AdminUsername: "admin", AdminPassword: adminPassword}
