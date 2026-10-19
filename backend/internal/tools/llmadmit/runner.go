@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -72,7 +73,7 @@ func newRunID() string {
 }
 
 // Start 创建任务并异步执行；已有活跃任务时返回 409。
-func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tier string, declarations map[string]bool) (Run, error) {
+func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tier, channel string, declarations map[string]bool) (Run, error) {
 	if busy, _ := r.Busy(); busy {
 		return Run{}, service.Problem(409, "已有进行中的测试任务，请先完成或终止")
 	}
@@ -91,7 +92,7 @@ func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tie
 	declJSON, _ := json.Marshal(declarations)
 	run := Run{
 		ID: newRunID(), CreatedBy: createdBy, Suite: s.ID, SuiteName: s.Name,
-		BaseURL: target.BaseURL, APIKey: target.APIKey, Model: target.Model,
+		BaseURL: target.BaseURL, APIKey: target.APIKey, Model: target.Model, Channel: channel,
 		Tier: tier, Declarations: string(declJSON), Status: runRunning,
 		TotalCases: len(cases), CreatedAt: time.Now(),
 	}
@@ -206,7 +207,7 @@ func (r *Runner) loop(ctx context.Context, runID string) {
 	}
 	s, ok := r.suites[run.Suite]
 	if !ok {
-		r.finish(runID, runAborted, "", "套件不存在")
+		r.finish(runID, runAborted, "", "套件不存在", nil)
 		return
 	}
 	now := time.Now()
@@ -214,6 +215,9 @@ func (r *Runner) loop(ctx context.Context, runID string) {
 	target := suite.Target{BaseURL: run.BaseURL, APIKey: run.APIKey, Model: run.Model}
 	decl := r.declarations(run)
 
+	// 三档顺序执行但不因失败终止：每档产出判定后继续，最终汇总裁决；
+	// 仅前置闸门失败（本次测试无效）才中止。
+	tierResults := map[string]string{}
 	for _, tier := range s.Tiers {
 		verdict := r.runTier(ctx, run, tier, target, decl)
 		switch verdict {
@@ -222,25 +226,33 @@ func (r *Runner) loop(ctx context.Context, runID string) {
 			return
 		case tierAborted:
 			return
-		case tierFailed:
-			r.finish(runID, runFailed, "不通过", tier.ID+" 档未通过，终止")
-			return
 		case tierInvalid:
-			r.finish(runID, runFailed, "无效", tier.ID+" 档前置闸门未通过")
+			r.finish(runID, runFailed, "无效", tier.ID+" 档前置闸门未通过", tierResults)
 			return
 		}
+		tierResults[tier.ID] = verdict
 		if tier.ID == run.Tier {
-			r.finish(runID, runSucceeded, "通过", "")
-			return
+			break
 		}
 	}
-	r.finish(runID, runSucceeded, "通过", "")
+	failedTiers := []string{}
+	for id, v := range tierResults {
+		if v != tierPassed {
+			failedTiers = append(failedTiers, id)
+		}
+	}
+	if len(failedTiers) == 0 {
+		r.finish(runID, runSucceeded, "通过", "", tierResults)
+		return
+	}
+	r.finish(runID, runFailed, "不通过", strings.Join(failedTiers, "/")+" 档未通过", tierResults)
 }
 
-func (r *Runner) finish(runID, status, verdict, reason string) {
+func (r *Runner) finish(runID, status, verdict, reason string, tierResults map[string]string) {
 	now := time.Now()
+	results, _ := json.Marshal(tierResults)
 	r.db.Model(&Run{}).Where("id = ?", runID).Updates(map[string]any{
-		"status": status, "verdict": verdict, "stop_reason": reason, "finished_at": &now,
+		"status": status, "verdict": verdict, "stop_reason": reason, "tier_results": string(results), "finished_at": &now,
 	})
 }
 
@@ -287,9 +299,7 @@ func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target s
 				p1Count++
 			}
 		}
-		if failed && c.Level == suite.LevelP0 {
-			return tierFailed // P0 立即终止当档
-		}
+		// P0 不提前退出：当档剩余用例继续执行，保证数据完整。
 	}
 	// §1.3：同一档 P1 ≥ 3 → 当档不通过。
 	if failed || p1Count >= 3 {

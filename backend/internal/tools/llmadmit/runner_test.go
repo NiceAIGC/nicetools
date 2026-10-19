@@ -182,7 +182,7 @@ func TestRunnerFTierPasses(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +213,11 @@ func TestRunnerSingleFlight(t *testing.T) {
 	server := fakeGateway(150 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", map[string]bool{})
+	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	problem, ok := err.(*service.Error)
 	if !ok || problem.Status != 409 {
 		t.Fatalf("second start err=%v want 409", err)
@@ -230,7 +230,7 @@ func TestRunnerPauseResume(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +251,42 @@ func TestRunnerPauseResume(t *testing.T) {
 	}
 }
 
+// 档位失败不终止：P0 失败后当档剩余用例继续，任务跑完，裁决不通过。
+func TestRunnerTierFailureContinues(t *testing.T) {
+	// 假网关身份自报错误 → F-02 P0 失败。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Write([]byte(`{"data":[{"id":"kimi-k3"}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","object":"chat.completion","model":"kimi-k3","choices":[{"message":{"role":"assistant","content":"我是 ChatGPT","reasoning_content":"想"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":24,"total_tokens":33,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":8}}}`))
+	}))
+	defer server.Close()
+	r, st := setupRunner(t)
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
+	if final.Verdict != "不通过" {
+		t.Fatalf("verdict=%s want 不通过", final.Verdict)
+	}
+	// 失败不提前终止：所有用例都有终态。
+	if final.DoneCases != final.TotalCases {
+		t.Fatalf("done=%d total=%d（失败不应终止剩余用例）", final.DoneCases, final.TotalCases)
+	}
+	var pending int64
+	st.DB.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", run.ID, []string{suite.StatusPending, suite.StatusRunning}).Count(&pending)
+	if pending > 0 {
+		t.Fatalf("%d 个用例未执行", pending)
+	}
+	// 每档判定落库。
+	if !strings.Contains(final.TierResults, `"F":"failed"`) {
+		t.Fatalf("tier_results=%s", final.TierResults)
+	}
+}
+
 // 闸门不过 → 测试无效，不产出 P0 结论。
 func TestRunnerGateFailureInvalid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +294,7 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}

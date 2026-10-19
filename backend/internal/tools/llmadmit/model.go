@@ -11,19 +11,23 @@ type Run struct {
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"-"`
 	Model     string `json:"model"`
-	// Tier 是目标档位：F=仅 F，M=F+M，S=F+M+S（三档顺序执行，失败即终止）。
+	// Tier 是目标档位：F=仅 F，M=F+M，S=F+M+S（三档顺序执行，失败仍继续）。
 	Tier string `json:"tier"`
+	// Channel 是渠道标识（如「张三的 K3 渠道」），进入报告环境；导出时可覆盖。
+	Channel string `json:"channel"`
 	// Declarations 是能力声明 JSON：{"video":false,...}；未声明支持的能力对应用例豁免。
 	Declarations string `json:"declarations"`
 	// Status: running / pausing / paused / succeeded / failed / aborted
-	Status     string     `gorm:"index" json:"status"`
-	Verdict    string     `json:"verdict"` // 通过 / 不通过 / 无效（闸门不过）/ ""
-	StopReason string     `json:"stop_reason,omitempty"`
-	TotalCases int        `json:"total_cases"`
-	DoneCases  int        `json:"done_cases"`
-	CreatedAt  time.Time  `json:"created_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Status  string `gorm:"index" json:"status"`
+	Verdict string `json:"verdict"` // 通过 / 不通过 / 无效（闸门不过）/ ""
+	// TierResults 是每档判定 JSON：{"F":"passed","M":"failed"}。
+	TierResults string     `json:"tier_results"`
+	StopReason  string     `json:"stop_reason,omitempty"`
+	TotalCases  int        `json:"total_cases"`
+	DoneCases   int        `json:"done_cases"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
 func (Run) TableName() string { return "tool_llmadmit_runs" }

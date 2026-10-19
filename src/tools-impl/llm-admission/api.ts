@@ -17,6 +17,7 @@ export interface Run {
   suite_name: string;
   base_url: string;
   model: string;
+  channel: string;
   tier: string;
   declarations: string;
   status: "running" | "pausing" | "paused" | "succeeded" | "failed" | "aborted";
@@ -48,6 +49,7 @@ export interface CreateInput {
   base_url: string;
   api_key: string;
   model: string;
+  channel: string;
   suite: string;
   tier: string;
   declarations: Record<string, boolean>;
@@ -61,6 +63,14 @@ export const pauseRun = (id: string) => toolApi(ID, `/runs/${id}/pause`, json("P
 export const resumeRun = (id: string) => toolApi(ID, `/runs/${id}/resume`, json("POST", {}));
 export const abortRun = (id: string) => toolApi(ID, `/runs/${id}/abort`, json("POST", {}));
 
-export function exportRun(id: string, type: "full" | "masked", format: "json" | "md") {
-  window.open(`/api/tools/${ID}/runs/${id}/export?type=${type}&format=${format}`, "_blank");
+export function exportRun(id: string, type: "full" | "masked", format: "json" | "md", channel?: string) {
+  const params = new URLSearchParams({ type, format });
+  if (channel) params.set("channel", channel);
+  window.open(`/api/tools/${ID}/runs/${id}/export?${params}`, "_blank");
+}
+
+export function exportMerged(ids: string[], type: "full" | "masked", format: "json" | "md", channel?: string) {
+  const params = new URLSearchParams({ ids: ids.join(","), type, format });
+  if (channel) params.set("channel", channel);
+  window.open(`/api/tools/${ID}/export/merged?${params}`, "_blank");
 }

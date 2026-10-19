@@ -46,6 +46,7 @@ func (m *Module) Register(read, write *gin.RouterGroup, d module.Deps) {
 	read.GET("/runs", m.runs)
 	read.GET("/runs/:rid", m.runDetail)
 	read.GET("/runs/:rid/export", m.export)
+	read.GET("/export/merged", m.exportMerged)
 	write.POST("/runs", m.create)
 	write.POST("/runs/:rid/pause", func(c *gin.Context) { m.control(c, m.runner.Pause) })
 	write.POST("/runs/:rid/resume", func(c *gin.Context) { m.control(c, m.runner.Resume) })
@@ -98,6 +99,7 @@ type createInput struct {
 	BaseURL      string          `json:"base_url"`
 	APIKey       string          `json:"api_key"`
 	Model        string          `json:"model"`
+	Channel      string          `json:"channel"`
 	Suite        string          `json:"suite"`
 	Tier         string          `json:"tier"`
 	Declarations map[string]bool `json:"declarations"`
@@ -134,10 +136,11 @@ func (m *Module) create(c *gin.Context) {
 	if strings.TrimSpace(input.Model) == "" {
 		input.Model = chosen.DefaultModel
 	}
-	if !service.Bounded(input.Model, 64) {
-		module.Fail(c, service.Problem(400, "模型名称过长"))
+	if !service.Bounded(input.Model, 64) || !service.Bounded(input.Channel, 64) {
+		module.Fail(c, service.Problem(400, "模型或渠道名称过长"))
 		return
 	}
+	input.Channel = strings.TrimSpace(input.Channel)
 	// 只接受套件声明过的能力键，忽略前端夹带。
 	declarations := map[string]bool{}
 	for _, cap := range chosen.Capabilities {
@@ -147,7 +150,7 @@ func (m *Module) create(c *gin.Context) {
 	if user := module.CurrentUser(c); user != nil {
 		actor = user.Username
 	}
-	run, err := m.runner.Start(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, input.Tier, declarations)
+	run, err := m.runner.Start(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, input.Tier, input.Channel, declarations)
 	if err != nil {
 		module.Fail(c, err)
 		return
@@ -181,26 +184,58 @@ func (m *Module) abort(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
-// export 导出报告：type=full|masked，format=json|md；两版都带 niceaigc 水印。
+// export 导出报告：type=full|masked，format=json|md，channel 可覆盖渠道名；
+// 两版都带 niceaigc 水印。
 func (m *Module) export(c *gin.Context) {
 	run, ok := m.findRun(c)
 	if !ok {
 		return
 	}
-	masked := c.DefaultQuery("type", "full") == "masked"
-	format := c.DefaultQuery("format", "json")
 	var rows []CaseResult
 	if err := m.db.Where("run_id = ?", run.ID).Order("seq ASC").Find(&rows).Error; err != nil {
 		module.Fail(c, err)
 		return
 	}
-	rep := m.buildReport(run, rows, masked)
+	rep := m.buildReport(run, rows, c.DefaultQuery("type", "full") == "masked", c.Query("channel"))
+	m.respondReport(c, rep, "llmadmit-"+run.ID)
+}
+
+// exportMerged 合并多个任务导出：ids= id 逗号分隔，同用例取最新结果。
+func (m *Module) exportMerged(c *gin.Context) {
+	ids := strings.Split(c.Query("ids"), ",")
+	if len(ids) == 0 || ids[0] == "" || len(ids) > 20 {
+		module.Fail(c, service.Problem(400, "ids 须为 1–20 个任务 id"))
+		return
+	}
+	var runs []Run
+	if err := m.db.Where("id IN ?", ids).Order("created_at ASC").Find(&runs).Error; err != nil {
+		module.Fail(c, err)
+		return
+	}
+	if len(runs) != len(ids) {
+		module.Fail(c, service.Problem(404, "部分任务不存在"))
+		return
+	}
+	rowsByID := map[string][]CaseResult{}
+	for _, run := range runs {
+		var rows []CaseResult
+		if err := m.db.Where("run_id = ?", run.ID).Order("seq ASC").Find(&rows).Error; err != nil {
+			module.Fail(c, err)
+			return
+		}
+		rowsByID[run.ID] = rows
+	}
+	rep := m.buildMergedReport(runs, rowsByID, c.DefaultQuery("type", "full") == "masked", c.Query("channel"))
+	m.respondReport(c, rep, "llmadmit-merged")
+}
+
+func (m *Module) respondReport(c *gin.Context, rep report, base string) {
 	kind := "full"
-	if masked {
+	if rep.Masked {
 		kind = "masked"
 	}
-	filename := "llmadmit-" + run.ID + "-" + kind
-	switch format {
+	filename := base + "-" + kind
+	switch c.DefaultQuery("format", "json") {
 	case "json":
 		data, err := json.MarshalIndent(rep, "", "  ")
 		if err != nil {

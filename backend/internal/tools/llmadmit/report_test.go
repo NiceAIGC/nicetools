@@ -35,7 +35,7 @@ func TestReportMasking(t *testing.T) {
 	run, rows := sampleRunAndRows()
 	m := &Module{}
 
-	full := m.buildReport(run, rows, false)
+	full := m.buildReport(run, rows, false, "")
 	if full.Environment.BaseURL != "https://secret-gateway.example.com/v1" {
 		t.Fatalf("full base_url=%s", full.Environment.BaseURL)
 	}
@@ -49,7 +49,7 @@ func TestReportMasking(t *testing.T) {
 		t.Fatal("缺水印")
 	}
 
-	masked := m.buildReport(run, rows, true)
+	masked := m.buildReport(run, rows, true, "")
 	if strings.Contains(masked.Environment.BaseURL, "secret-gateway") {
 		t.Fatalf("masked base_url 泄露: %s", masked.Environment.BaseURL)
 	}
@@ -73,7 +73,7 @@ func TestReportMasking(t *testing.T) {
 func TestRenderMarkdownWatermark(t *testing.T) {
 	run, rows := sampleRunAndRows()
 	m := &Module{}
-	md := renderMarkdown(m.buildReport(run, rows, true))
+	md := renderMarkdown(m.buildReport(run, rows, true, ""))
 	if !strings.Contains(md, Watermark) {
 		t.Fatal("MD 缺水印")
 	}
@@ -83,7 +83,7 @@ func TestRenderMarkdownWatermark(t *testing.T) {
 	if strings.Contains(md, "secret-gateway") {
 		t.Fatal("masked MD 泄露目标地址")
 	}
-	full := renderMarkdown(m.buildReport(run, rows, false))
+	full := renderMarkdown(m.buildReport(run, rows, false, ""))
 	if !strings.Contains(full, "| 用例 |") {
 		t.Fatal("MD 缺用例明细表")
 	}
@@ -95,5 +95,48 @@ func TestMaskURL(t *testing.T) {
 	}
 	if got := maskURL("http://192.168.1.1:8080/v1"); !strings.HasPrefix(got, "http://") {
 		t.Fatalf("maskURL=%s", got)
+	}
+}
+
+// 合并报告：同一用例取最新任务结果；渠道名取最新任务/覆盖参数；裁决按合并视图重算。
+func TestMergedReport(t *testing.T) {
+	m := &Module{}
+	t1 := time.Now().Add(-2 * time.Hour)
+	t2 := time.Now().Add(-time.Hour)
+	run1 := Run{ID: "r1", Suite: "k3-v1", SuiteName: "K3", BaseURL: "https://gw-a.example.com/v1", Model: "kimi-k3", Tier: "F", Channel: "张三的K3渠道", Declarations: "{}", Status: runFailed, Verdict: "不通过", CreatedAt: t1, FinishedAt: &t1}
+	run2 := Run{ID: "r2", Suite: "k3-v1", SuiteName: "K3", BaseURL: "https://gw-a.example.com/v1", Model: "kimi-k3", Tier: "M", Declarations: "{}", Status: runSucceeded, Verdict: "通过", CreatedAt: t2, FinishedAt: &t2}
+	rows1 := []CaseResult{
+		{RunID: "r1", Seq: 1, CaseID: "F-01", Tier: "F", Name: "真伪指纹", Level: "P0", Status: "failed", Summary: "旧结果", Metrics: "{}", Defects: `[{"level":"P0","expect":"e","actual":"a","attribution":"upstream"}]`},
+		{RunID: "r1", Seq: 2, CaseID: "F-02", Tier: "F", Name: "身份", Level: "P0", Status: "passed", Summary: "ok", Metrics: "{}", Defects: "[]"},
+	}
+	rows2 := []CaseResult{
+		{RunID: "r2", Seq: 1, CaseID: "F-01", Tier: "F", Name: "真伪指纹", Level: "P0", Status: "passed", Summary: "新结果", Metrics: "{}", Defects: "[]"},
+		{RunID: "r2", Seq: 2, CaseID: "M-01", Tier: "M", Name: "Stream", Level: "required", Status: "passed", Summary: "ok", Metrics: "{}", Defects: "[]"},
+	}
+	rep := m.buildMergedReport([]Run{run1, run2}, map[string][]CaseResult{"r1": rows1, "r2": rows2}, false, "")
+	if len(rep.Cases) != 3 {
+		t.Fatalf("merged cases=%d want 3", len(rep.Cases))
+	}
+	for _, c := range rep.Cases {
+		if c.CaseID == "F-01" && c.Summary != "新结果" {
+			t.Fatalf("F-01 未取最新: %s", c.Summary)
+		}
+	}
+	if rep.Cases[0].Tier != "F" || rep.Cases[2].Tier != "M" {
+		t.Fatalf("排序错误: %s/%s", rep.Cases[0].Tier, rep.Cases[2].Tier)
+	}
+	if rep.Environment.Channel != "张三的K3渠道" {
+		t.Fatalf("channel=%s", rep.Environment.Channel)
+	}
+	if rep.Verdict != "通过" {
+		t.Fatalf("verdict=%s want 通过（F-01 最新已通过）", rep.Verdict)
+	}
+	if len(rep.Merged) != 2 {
+		t.Fatalf("merged runs=%d", len(rep.Merged))
+	}
+	// 覆盖渠道名。
+	rep = m.buildMergedReport([]Run{run1, run2}, map[string][]CaseResult{"r1": rows1, "r2": rows2}, false, "李四的K3渠道")
+	if rep.Environment.Channel != "李四的K3渠道" {
+		t.Fatalf("override channel=%s", rep.Environment.Channel)
 	}
 }

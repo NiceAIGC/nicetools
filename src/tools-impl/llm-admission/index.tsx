@@ -22,6 +22,7 @@ import {
 
 import {
   createRun,
+  exportMerged,
   exportRun,
   listRuns,
   listSuites,
@@ -33,6 +34,24 @@ import {
   type Run,
   type SuiteInfo,
 } from "./api";
+
+// 目标信息本地保存（含密钥，仅存本机浏览器），刷新/重开不丢。
+const TARGET_KEY = "llm-admission:target";
+
+interface SavedTarget {
+  base_url: string;
+  api_key: string;
+  model: string;
+  channel: string;
+}
+
+function loadTarget(): SavedTarget {
+  try {
+    return { base_url: "", api_key: "", model: "", channel: "", ...JSON.parse(localStorage.getItem(TARGET_KEY) ?? "{}") };
+  } catch {
+    return { base_url: "", api_key: "", model: "", channel: "" };
+  }
+}
 
 const statusColor: Record<string, "primary" | "warning" | "success" | "danger" | "default"> = {
   running: "primary",
@@ -76,13 +95,17 @@ export default function LlmAdmission() {
   const [detail, setDetail] = useState<{ run: Run; cases: CaseRow[] } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [baseURL, setBaseURL] = useState("");
-  const [apiKey, setAPIKey] = useState("");
+  const savedTarget = useState(loadTarget)[0];
+  const [baseURL, setBaseURL] = useState(savedTarget.base_url);
+  const [apiKey, setAPIKey] = useState(savedTarget.api_key);
+  const [channel, setChannel] = useState(savedTarget.channel);
   const [suiteId, setSuiteId] = useState("");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(savedTarget.model);
   const [tier, setTier] = useState("F");
   const [declarations, setDeclarations] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exportChannel, setExportChannel] = useState("");
 
   const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
   const active = runs.find((r) => ["running", "pausing", "paused"].includes(r.status));
@@ -110,7 +133,7 @@ export default function LlmAdmission() {
         setSuites(list);
         if (list[0]) {
           setSuiteId(list[0].id);
-          setModel(list[0].default_model);
+          setModel((m) => m || list[0].default_model);
           setDeclarations(Object.fromEntries(list[0].capabilities.map((c) => [c.key, false])));
         }
       })
@@ -133,9 +156,9 @@ export default function LlmAdmission() {
     if (!suite) return;
     setSubmitting(true);
     try {
-      const run = await createRun({ base_url: baseURL, api_key: apiKey, model, suite: suite.id, tier, declarations });
+      const run = await createRun({ base_url: baseURL, api_key: apiKey, model, channel, suite: suite.id, tier, declarations });
+      localStorage.setItem(TARGET_KEY, JSON.stringify({ base_url: baseURL, api_key: apiKey, model, channel }));
       addToast({ title: "测试已启动" });
-      setAPIKey("");
       await refreshRuns();
       setDetail({ run, cases: [] });
       refreshDetail(run.id);
@@ -170,11 +193,12 @@ export default function LlmAdmission() {
         <CardBody className="gap-4">
           <div>
             <h2 className="text-lg font-semibold">新建测试</h2>
-            <p className="mt-1 text-xs text-default-400">{suite.name} · 三档顺序执行，任一档不通过即终止</p>
+            <p className="mt-1 text-xs text-default-400">{suite.name} · 三档顺序执行，失败不终止，最终汇总裁决</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
+            <Input label="渠道名称" placeholder="如：张三的 K3 渠道" value={channel} onValueChange={setChannel} description="写入报告，导出时可再改" />
             <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} isRequired />
-            <Input label="密钥" type="password" placeholder="sk-…" value={apiKey} onValueChange={setAPIKey} isRequired />
+            <Input label="密钥" type="password" placeholder="sk-…（仅存本机浏览器）" value={apiKey} onValueChange={setAPIKey} isRequired />
             <Input label="模型名称" value={model} onValueChange={setModel} isRequired />
             <Select
               label="测试标准"
@@ -201,7 +225,7 @@ export default function LlmAdmission() {
             </Select>
           </div>
           <div className="flex flex-col gap-2">
-            <span className="text-sm text-default-500">能力声明（声明支持的能力对应用例必须全过；未声明的豁免）</span>
+            <span className="text-sm text-default-500">能力验证（勾选 = 验证该能力，对应用例必须全过；不勾 = 豁免不测）</span>
             <div className="flex flex-wrap gap-x-6 gap-y-2">
               {suite.capabilities.map((cap) => (
                 <Switch
@@ -253,10 +277,10 @@ export default function LlmAdmission() {
                 {["running", "pausing", "paused"].includes(detail.run.status) && (
                   <Button size="sm" color="danger" variant="light" onPress={() => act(abortRun, detail.run.id, "已终止")}>终止</Button>
                 )}
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "md")}>详细 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "json")}>详细 JSON</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "md")}>脱敏 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "json")}>脱敏 JSON</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "md", exportChannel || undefined)}>详细 MD</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "json", exportChannel || undefined)}>详细 JSON</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "md", exportChannel || undefined)}>脱敏 MD</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "json", exportChannel || undefined)}>脱敏 JSON</Button>
               </div>
             </div>
             <Progress
@@ -287,9 +311,35 @@ export default function LlmAdmission() {
       <Card>
         <CardBody className="gap-3">
           <h2 className="text-lg font-semibold">历史任务</h2>
-          <Table aria-label="历史任务" removeWrapper>
+          <div className="flex flex-wrap items-end gap-3">
+            <Input
+              label="报告渠道名称"
+              size="sm"
+              className="w-56"
+              placeholder="默认取任务上的渠道名"
+              value={exportChannel}
+              onValueChange={setExportChannel}
+            />
+            {selected.size > 0 && (
+              <>
+                <span className="text-xs text-default-400">已选 {selected.size} 个任务</span>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "md", exportChannel || undefined)}>合并详细 MD</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "json", exportChannel || undefined)}>合并详细 JSON</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "md", exportChannel || undefined)}>合并脱敏 MD</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "json", exportChannel || undefined)}>合并脱敏 JSON</Button>
+              </>
+            )}
+          </div>
+          <Table
+            aria-label="历史任务"
+            removeWrapper
+            selectionMode="multiple"
+            selectedKeys={selected}
+            onSelectionChange={(keys) => setSelected(keys === "all" ? new Set(runs.map((r) => r.id)) : new Set([...keys].map(String)))}
+          >
             <TableHeader>
               <TableColumn>时间</TableColumn>
+              <TableColumn>渠道</TableColumn>
               <TableColumn>模型</TableColumn>
               <TableColumn>档位</TableColumn>
               <TableColumn>进度</TableColumn>
@@ -300,6 +350,7 @@ export default function LlmAdmission() {
               {runs.map((run) => (
                 <TableRow key={run.id}>
                   <TableCell className="whitespace-nowrap text-xs">{new Date(run.created_at).toLocaleString()}</TableCell>
+                  <TableCell className="max-w-32 truncate">{run.channel || "—"}</TableCell>
                   <TableCell className="max-w-40 truncate">{run.model}</TableCell>
                   <TableCell>{run.tier}</TableCell>
                   <TableCell>{run.done_cases}/{run.total_cases}</TableCell>
