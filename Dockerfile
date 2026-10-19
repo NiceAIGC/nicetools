@@ -2,12 +2,12 @@
 FROM node:22-bookworm-slim AS frontend
 # 国内部署可在 .env 设 NPM_REGISTRY=https://registry.npmmirror.com。
 ARG NPM_REGISTRY=https://registry.npmjs.org
-ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY} NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+ENV NPM_REGISTRY=${NPM_REGISTRY}
 WORKDIR /build
 # corepack 在部分网络环境拉取/校验失败，直接经 npm 镜像安装 pnpm。
-RUN npm install -g pnpm@10.11.0
+RUN printf 'registry=%s\n' "$NPM_REGISTRY" > /usr/local/etc/npmrc && npm install -g pnpm@10.11.0
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN printf 'registry=%s\n' "$NPM_REGISTRY" > .npmrc && pnpm install --frozen-lockfile
 COPY tsconfig.json vite.config.ts index.html ./
 COPY public ./public
 COPY src ./src
