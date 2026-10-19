@@ -78,12 +78,13 @@ export default function LlmAdmission() {
 
   const [baseURL, setBaseURL] = useState("");
   const [apiKey, setAPIKey] = useState("");
+  const [suiteId, setSuiteId] = useState("");
   const [model, setModel] = useState("");
   const [tier, setTier] = useState("F");
   const [declarations, setDeclarations] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  const suite = suites[0];
+  const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
   const active = runs.find((r) => ["running", "pausing", "paused"].includes(r.status));
   const detailId = detail?.run.id ?? null;
 
@@ -108,6 +109,7 @@ export default function LlmAdmission() {
       .then((list) => {
         setSuites(list);
         if (list[0]) {
+          setSuiteId(list[0].id);
           setModel(list[0].default_model);
           setDeclarations(Object.fromEntries(list[0].capabilities.map((c) => [c.key, false])));
         }
@@ -174,6 +176,22 @@ export default function LlmAdmission() {
             <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} isRequired />
             <Input label="密钥" type="password" placeholder="sk-…" value={apiKey} onValueChange={setAPIKey} isRequired />
             <Input label="模型名称" value={model} onValueChange={setModel} isRequired />
+            <Select
+              label="测试标准"
+              selectedKeys={[suite.id]}
+              onChange={(e) => {
+                const next = suites.find((s) => s.id === e.target.value);
+                if (!next) return;
+                setSuiteId(next.id);
+                setModel(next.default_model);
+                setTier(next.tiers[0]?.id ?? "F");
+                setDeclarations(Object.fromEntries(next.capabilities.map((c) => [c.key, false])));
+              }}
+            >
+              {suites.map((s) => (
+                <SelectItem key={s.id}>{s.name}</SelectItem>
+              ))}
+            </Select>
             <Select label="目标档位" selectedKeys={[tier]} onChange={(e) => setTier(e.target.value)}>
               {suite.tiers.map((t) => (
                 <SelectItem key={t.id} description={t.hint}>
