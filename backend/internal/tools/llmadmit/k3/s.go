@@ -34,27 +34,27 @@ func sCases() []suite.Case {
 	return []suite.Case{
 		{ID: "S-T1", Name: "阶梯压测 T1（1k-5k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T1", 3000, 60, 50, 2500, 4000, 20000})
-		}},
+		}, Doc: suite.CaseDoc{Purpose: "验证 1k-5k 输入档并发稳定性。", Method: "校准 3k token，60 并发发送 50 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T1"}},
 		{ID: "S-T2", Name: "阶梯压测 T2（6k-15k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T2", 10500, 50, 48, 4000, 6000, 30000})
-		}},
+		}, Doc: suite.CaseDoc{Purpose: "验证 6k-15k 输入档并发稳定性。", Method: "校准 10.5k token，50 并发发送 48 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T2"}},
 		{ID: "S-T3", Name: "阶梯压测 T3（16k-30k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T3", 23000, 40, 36, 4000, 8000, 48000})
-		}},
+		}, Doc: suite.CaseDoc{Purpose: "验证 16k-30k 输入档并发稳定性。", Method: "校准 23k token，40 并发发送 36 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T3"}},
 		{ID: "S-T4", Name: "阶梯压测 T4（32k-60k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T4", 46000, 15, 18, 6000, 12000, 68000})
-		}},
+		}, Doc: suite.CaseDoc{Purpose: "验证 32k-60k 输入档并发稳定性。", Method: "校准 46k token，15 并发发送 18 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T4"}},
 		{ID: "S-T5", Name: "阶梯压测 T5（64k-120k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T5", 92000, 10, 12, 8000, 16000, 92000})
-		}},
+		}, Doc: suite.CaseDoc{Purpose: "验证 64k-120k 输入档并发稳定性。", Method: "校准 92k token，10 并发发送 12 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T5"}},
 		{ID: "S-T6", Name: "阶梯压测 T6（128k-240k）", Level: suite.LevelRequired, Run: func(c *suite.CaseCtx) suite.Outcome {
 			return sLoad(c, sLoadSpec{"T6", 184000, 5, 8, 10000, 20000, 130000})
-		}},
-		{ID: "S-C1", Name: "缓存压测命中率", Level: suite.LevelRequired, Run: sCacheHit},
-		{ID: "S-C2", Name: "缓存 TTL 压测", Level: suite.LevelRequired, Run: sCacheTTL},
-		{ID: "S-C3", Name: "多轮稳态缓存命中", Level: suite.LevelRequired, Run: sCacheMultiturn},
-		{ID: "S-SOAK", Name: "Soak 稳定性（30 分钟）", Level: suite.LevelRequired, Run: sSoak},
-		{ID: "S-X1", Name: "极限输入观测（256k-512k）", Level: suite.LevelRecord, Run: sExtreme},
+		}, Doc: suite.CaseDoc{Purpose: "验证 128k-240k 输入档并发稳定性。", Method: "校准 184k token，5 并发发送 8 个随机前缀流式请求。", Expect: "成功率≥95%、错误率≤5%、无失控及 TTFT/TPOT/E2E 门限全达标；必过。", Ref: "§6.1 S-T6"}},
+		{ID: "S-C1", Name: "缓存压测命中率", Level: suite.LevelRequired, Run: sCacheHit, Doc: suite.CaseDoc{Purpose: "验证并发下三类缓存请求的命中率。", Method: "2048 token 前缀，repeat/multiturn/suffix 各预热后 10 并发各测 5 次。", Expect: "三场景 token 命中率均≥80%；必过。", Ref: "§6.2 S-C1"}},
+		{ID: "S-C2", Name: "缓存 TTL 压测", Level: suite.LevelRequired, Run: sCacheTTL, Doc: suite.CaseDoc{Purpose: "验证长前缀缓存寿命。", Method: "70k token 前缀预热，在 0 秒至 30 分钟八个检查点测量。", Expect: "30 秒及以后至少一次 cached_tokens>0；必过。", Ref: "§6.2 S-C2"}},
+		{ID: "S-C3", Name: "多轮稳态缓存命中", Level: suite.LevelRequired, Run: sCacheMultiturn, Doc: suite.CaseDoc{Purpose: "验证多轮增长上下文中的缓存稳定性。", Method: "2048 token 起始前缀连续 6 轮，每轮追加模型回答与追问。", Expect: "Round 2 及以后每轮 token 命中率≥60%；必过。", Ref: "§6.2 S-C3"}},
+		{ID: "S-SOAK", Name: "Soak 稳定性（30 分钟）", Level: suite.LevelRequired, Run: sSoak, Doc: suite.CaseDoc{Purpose: "发现持续负载下的退化、5xx 风暴与连接重置。", Method: "23k token 随机前缀，20 worker 连续压测 30 分钟。", Expect: "错误率≤1%、无连续≥5 个 5xx、TTFT CV<0.5；必过。", Ref: "§6.3 S-SOAK"}},
+		{ID: "S-X1", Name: "极限输入观测（256k-512k）", Level: suite.LevelRecord, Run: sExtreme, Doc: suite.CaseDoc{Purpose: "记录极限上下文的服务表现。", Method: "校准 384k token，单并发发送 6 个随机前缀流式请求。", Expect: "记录成功率和分位延迟，无通过线。", Ref: "§6.4 S-X1"}},
 	}
 }
 

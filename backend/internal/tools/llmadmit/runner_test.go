@@ -182,7 +182,7 @@ func TestRunnerFTierPasses(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +213,11 @@ func TestRunnerSingleFlight(t *testing.T) {
 	server := fakeGateway(150 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	problem, ok := err.(*service.Error)
 	if !ok || problem.Status != 409 {
 		t.Fatalf("second start err=%v want 409", err)
@@ -230,7 +230,7 @@ func TestRunnerPauseResume(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,6 +307,47 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	st.DB.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", run.ID, []string{suite.StatusPending, suite.StatusRunning}).Count(&left)
 	if left > 0 {
 		t.Fatalf("%d 个用例停留在待执行", left)
+	}
+}
+
+// 任务级用例自定义：skip 记跳过、exempt 记豁免，均不影响裁决。
+func TestRunnerCaseOverrides(t *testing.T) {
+	server := fakeGateway(0)
+	defer server.Close()
+	r, st := setupRunner(t)
+	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{},
+		map[string]string{"F-10": "skip", "F-08": "exempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
+	if final.Verdict != "通过" {
+		t.Fatalf("verdict=%s want 通过", final.Verdict)
+	}
+	status := map[string]string{}
+	var rows []CaseResult
+	st.DB.Where("run_id = ?", run.ID).Find(&rows)
+	for _, row := range rows {
+		status[row.CaseID] = row.Status
+	}
+	if status["F-10"] != suite.StatusSkipped {
+		t.Fatalf("F-10=%s want skipped", status["F-10"])
+	}
+	if status["F-08"] != suite.StatusExempt {
+		t.Fatalf("F-08=%s want exempt", status["F-08"])
+	}
+	if status["F-01"] != suite.StatusPassed {
+		t.Fatalf("F-01=%s want passed", status["F-01"])
+	}
+	// 非法覆盖值与未知用例在创建期拒绝。
+	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, map[string]string{"F-01": "bogus"})
+	problem, ok := err.(*service.Error)
+	if !ok || problem.Status != 400 {
+		t.Fatalf("非法覆盖值 err=%v want 400", err)
+	}
+	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, map[string]string{"X-99": "skip"})
+	if _, ok := err.(*service.Error); !ok {
+		t.Fatalf("未知用例 err=%v want 400", err)
 	}
 }
 

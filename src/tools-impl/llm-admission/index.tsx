@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Accordion,
+  AccordionItem,
   addToast,
   Button,
   Card,
@@ -103,11 +105,16 @@ export default function LlmAdmission() {
   const [model, setModel] = useState(savedTarget.model);
   const [tier, setTier] = useState("F");
   const [declarations, setDeclarations] = useState<Record<string, boolean>>({});
+  const [overrides, setOverrides] = useState<Record<string, "skip" | "exempt">>({});
   const [submitting, setSubmitting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exportChannel, setExportChannel] = useState("");
 
   const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
+  // 目标档位及其前置档位的全部用例（如选 M 则显示 F+M）。
+  const tierOrder = suite ? suite.tiers.map((t) => t.id) : [];
+  const activeTiers = suite ? suite.tiers.slice(0, tierOrder.indexOf(tier) + 1) : [];
+  const overrideCount = Object.keys(overrides).length;
   const active = runs.find((r) => ["running", "pausing", "paused"].includes(r.status));
   const detailId = detail?.run.id ?? null;
 
@@ -156,7 +163,7 @@ export default function LlmAdmission() {
     if (!suite) return;
     setSubmitting(true);
     try {
-      const run = await createRun({ base_url: baseURL, api_key: apiKey, model, channel, suite: suite.id, tier, declarations });
+      const run = await createRun({ base_url: baseURL, api_key: apiKey, model, channel, suite: suite.id, tier, declarations, case_overrides: overrides });
       localStorage.setItem(TARGET_KEY, JSON.stringify({ base_url: baseURL, api_key: apiKey, model, channel }));
       addToast({ title: "测试已启动" });
       await refreshRuns();
@@ -239,6 +246,50 @@ export default function LlmAdmission() {
               ))}
             </div>
           </div>
+          <Accordion isCompact>
+            <AccordionItem
+              key="overrides"
+              aria-label="用例自定义"
+              title={<span className="text-sm">用例自定义{overrideCount > 0 ? `（已调整 ${overrideCount} 项）` : ""}</span>}
+              subtitle={<span className="text-xs text-default-400">逐项选择跳过（不测）或豁免（测但不计入失败）</span>}
+            >
+              <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pb-2">
+                {activeTiers.map((t) => (
+                  <div key={t.id} className="flex flex-col gap-1">
+                    <span className="pt-1 text-xs font-semibold text-default-500">{t.name}</span>
+                    {t.cases.map((cs) => (
+                      <div key={cs.id} className="flex items-center gap-2 text-sm">
+                        <span className="w-16 shrink-0 font-mono text-xs text-default-400">{t.id}-{cs.id}</span>
+                        <span className="min-w-0 flex-1 truncate" title={cs.doc.purpose}>{cs.name}</span>
+                        {(cs.level === "P0" || cs.level === "required") && (
+                          <Chip size="sm" variant="bordered" color={cs.level === "P0" ? "danger" : "default"}>{cs.level === "P0" ? "P0" : "必过"}</Chip>
+                        )}
+                        <Select
+                          aria-label={`${cs.name} 执行方式`}
+                          size="sm"
+                          className="w-24"
+                          selectedKeys={[overrides[cs.id] ?? "default"]}
+                          onChange={(e) => {
+                            const value = e.target.value as "skip" | "exempt" | "default";
+                            setOverrides((prev) => {
+                              const next = { ...prev };
+                              if (value === "default") delete next[cs.id];
+                              else next[cs.id] = value;
+                              return next;
+                            });
+                          }}
+                        >
+                          <SelectItem key="default">默认</SelectItem>
+                          <SelectItem key="skip">不测</SelectItem>
+                          <SelectItem key="exempt">豁免</SelectItem>
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </AccordionItem>
+          </Accordion>
           <div className="flex items-center gap-3">
             <Button
               color="primary"
@@ -277,8 +328,10 @@ export default function LlmAdmission() {
                 {["running", "pausing", "paused"].includes(detail.run.status) && (
                   <Button size="sm" color="danger" variant="light" onPress={() => act(abortRun, detail.run.id, "已终止")}>终止</Button>
                 )}
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "pdf", exportChannel || undefined)}>详细 PDF</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "md", exportChannel || undefined)}>详细 MD</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "json", exportChannel || undefined)}>详细 JSON</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "pdf", exportChannel || undefined)}>脱敏 PDF</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "md", exportChannel || undefined)}>脱敏 MD</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "json", exportChannel || undefined)}>脱敏 JSON</Button>
               </div>
@@ -323,8 +376,10 @@ export default function LlmAdmission() {
             {selected.size > 0 && (
               <>
                 <span className="text-xs text-default-400">已选 {selected.size} 个任务</span>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "pdf", exportChannel || undefined)}>合并详细 PDF</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "md", exportChannel || undefined)}>合并详细 MD</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "json", exportChannel || undefined)}>合并详细 JSON</Button>
+                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "pdf", exportChannel || undefined)}>合并脱敏 PDF</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "md", exportChannel || undefined)}>合并脱敏 MD</Button>
                 <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "json", exportChannel || undefined)}>合并脱敏 JSON</Button>
               </>

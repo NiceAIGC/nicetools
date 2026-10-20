@@ -73,6 +73,15 @@ type CaseCtx struct {
 	CheckControl func() error
 }
 
+// CaseDoc 是用例说明：为什么测、怎么测、预期是什么、规范出处。
+// 前端展示与详细报告共用同一份文字，判据文字必须与 Run 的逻辑一致。
+type CaseDoc struct {
+	Purpose string `json:"purpose"` // 为什么这样测试
+	Method  string `json:"method"`  // 怎么测试（请求构造）
+	Expect  string `json:"expect"`  // 预期结果/通过判据
+	Ref     string `json:"ref"`     // 规范出处，如 §4.1
+}
+
 // Case 是一个准入用例。Run 只在 Declared 豁免判断之后被调用。
 type Case struct {
 	ID    string `json:"id"`   // F-01 / M-38 / S-T1
@@ -80,6 +89,7 @@ type Case struct {
 	Level Level  `json:"level"`
 	// Capability 非空时，未声明支持该能力 → 豁免。
 	Capability string                   `json:"capability,omitempty"`
+	Doc        CaseDoc                  `json:"doc"`
 	Run        func(c *CaseCtx) Outcome `json:"-"`
 }
 
@@ -87,7 +97,7 @@ type Case struct {
 type Tier struct {
 	ID    string `json:"id"` // F / M / S
 	Name  string `json:"name"`
-	Cases []Case `json:"-"`
+	Cases []Case `json:"cases"`
 	// 给前端的档位说明（请求量级/token 预算/耗时）。
 	Hint string `json:"hint"`
 }

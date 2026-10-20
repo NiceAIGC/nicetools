@@ -2,12 +2,20 @@ import { json, toolApi } from "../../api/client";
 
 const ID = "llm-admission";
 
+export interface SuiteCase {
+  id: string;
+  name: string;
+  level: string;
+  capability?: string;
+  doc: { purpose: string; method: string; expect: string; ref: string };
+}
+
 export interface SuiteInfo {
   id: string;
   name: string;
   default_model: string;
   capabilities: { key: string; label: string }[];
-  tiers: { id: string; name: string; hint: string }[];
+  tiers: { id: string; name: string; hint: string; cases: SuiteCase[] }[];
 }
 
 export interface Run {
@@ -53,7 +61,10 @@ export interface CreateInput {
   suite: string;
   tier: string;
   declarations: Record<string, boolean>;
+  case_overrides: Record<string, "skip" | "exempt">;
 }
+
+export type ExportFormat = "json" | "md" | "pdf";
 
 export const listSuites = () => toolApi<SuiteInfo[]>(ID, "/suites");
 export const listRuns = () => toolApi<Run[]>(ID, "/runs");
@@ -63,13 +74,13 @@ export const pauseRun = (id: string) => toolApi(ID, `/runs/${id}/pause`, json("P
 export const resumeRun = (id: string) => toolApi(ID, `/runs/${id}/resume`, json("POST", {}));
 export const abortRun = (id: string) => toolApi(ID, `/runs/${id}/abort`, json("POST", {}));
 
-export function exportRun(id: string, type: "full" | "masked", format: "json" | "md", channel?: string) {
+export function exportRun(id: string, type: "full" | "masked", format: ExportFormat, channel?: string) {
   const params = new URLSearchParams({ type, format });
   if (channel) params.set("channel", channel);
   window.open(`/api/tools/${ID}/runs/${id}/export?${params}`, "_blank");
 }
 
-export function exportMerged(ids: string[], type: "full" | "masked", format: "json" | "md", channel?: string) {
+export function exportMerged(ids: string[], type: "full" | "masked", format: ExportFormat, channel?: string) {
   const params = new URLSearchParams({ ids: ids.join(","), type, format });
   if (channel) params.set("channel", channel);
   window.open(`/api/tools/${ID}/export/merged?${params}`, "_blank");

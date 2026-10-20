@@ -73,7 +73,8 @@ func newRunID() string {
 }
 
 // Start 创建任务并异步执行；已有活跃任务时返回 409。
-func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tier, channel string, declarations map[string]bool) (Run, error) {
+// overrides：用例级自定义（skip=不测试 / exempt=手动豁免），键不存在的用例或非法取值直接报错。
+func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tier, channel string, declarations map[string]bool, overrides map[string]string) (Run, error) {
 	if busy, _ := r.Busy(); busy {
 		return Run{}, service.Problem(409, "已有进行中的测试任务，请先完成或终止")
 	}
@@ -89,11 +90,24 @@ func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tie
 	if !tierIDs[tier] {
 		return Run{}, service.Problem(400, "档位无效")
 	}
+	validIDs := map[string]bool{}
+	for _, c := range cases {
+		validIDs[c.ID] = true
+	}
+	for id, mode := range overrides {
+		if !validIDs[id] {
+			return Run{}, service.Problem(400, "用例不存在: "+id)
+		}
+		if mode != "skip" && mode != "exempt" {
+			return Run{}, service.Problem(400, "用例覆盖取值仅支持 skip/exempt")
+		}
+	}
 	declJSON, _ := json.Marshal(declarations)
+	ovrJSON, _ := json.Marshal(overrides)
 	run := Run{
 		ID: newRunID(), CreatedBy: createdBy, Suite: s.ID, SuiteName: s.Name,
 		BaseURL: target.BaseURL, APIKey: target.APIKey, Model: target.Model, Channel: channel,
-		Tier: tier, Declarations: string(declJSON), Status: runRunning,
+		Tier: tier, Declarations: string(declJSON), CaseOverrides: string(ovrJSON), Status: runRunning,
 		TotalCases: len(cases), CreatedAt: time.Now(),
 	}
 	err := r.db.Transaction(func(tx *gorm.DB) error {
@@ -182,6 +196,12 @@ func (r *Runner) declarations(run Run) map[string]bool {
 	return out
 }
 
+func (r *Runner) overrides(run Run) map[string]string {
+	out := map[string]string{}
+	_ = json.Unmarshal([]byte(run.CaseOverrides), &out)
+	return out
+}
+
 // control 返回长用例内部循环的控制检查函数。
 func (r *Runner) control(ctx context.Context, runID string) func() error {
 	return func() error {
@@ -218,8 +238,9 @@ func (r *Runner) loop(ctx context.Context, runID string) {
 	// 三档顺序执行但不因失败终止：每档产出判定后继续，最终汇总裁决；
 	// 仅前置闸门失败（本次测试无效）才中止。
 	tierResults := map[string]string{}
+	ovr := r.overrides(run)
 	for _, tier := range s.Tiers {
-		verdict := r.runTier(ctx, run, tier, target, decl)
+		verdict := r.runTier(ctx, run, tier, target, decl, ovr)
 		switch verdict {
 		case tierPaused:
 			r.db.Model(&Run{}).Where("id = ? AND status = ?", runID, runPausing).Update("status", runPaused)
@@ -267,7 +288,7 @@ const (
 	tierInvalid = "invalid"
 )
 
-func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target suite.Target, decl map[string]bool) string {
+func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target suite.Target, decl map[string]bool, ovr map[string]string) string {
 	declared := func(capability string) bool { return decl[capability] }
 	failed := false
 	p1Count := 0
@@ -285,6 +306,15 @@ func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target s
 		if row.Status != suite.StatusPending {
 			// 恢复时跳过已完成用例；其缺陷仍计入 P1 统计。
 			p1Count += countP1(row.Defects)
+			continue
+		}
+		// 任务级自定义：skip=不测试，exempt=手动豁免（均不影响裁决）。
+		switch ovr[c.ID] {
+		case "skip":
+			r.persist(run.ID, &row, suite.Outcome{Status: suite.StatusSkipped, Summary: "手动选择不测试"})
+			continue
+		case "exempt":
+			r.persist(run.ID, &row, suite.Outcome{Status: suite.StatusExempt, Summary: "手动豁免"})
 			continue
 		}
 		out := r.execute(ctx, run, c, target, declared, &row)

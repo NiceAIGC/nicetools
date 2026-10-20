@@ -1,6 +1,7 @@
 package llmadmit
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,38 @@ func TestReportMasking(t *testing.T) {
 	}
 	if masked.Watermark != Watermark || !masked.Masked {
 		t.Fatal("masked 报告缺水印或标记")
+	}
+}
+
+// 详细报告：证据带脱敏 curl（密钥打码、含请求体），无泄露。
+func TestFullReportContainsMaskedCurl(t *testing.T) {
+	run, rows := sampleRunAndRows()
+	run.APIKey = "sk-super-secret"
+	m := &Module{}
+	rep := m.buildReport(run, rows, false, "")
+	var ev []map[string]any
+	if err := json.Unmarshal(rep.Cases[0].Evidence, &ev); err != nil || len(ev) == 0 {
+		t.Fatal("详细报告缺证据")
+	}
+	curl, _ := ev[0]["curl"].(string)
+	if !strings.Contains(curl, "curl -X POST 'https://secret-gateway.example.com/v1/chat/completions'") {
+		t.Fatalf("curl 示例异常: %s", curl)
+	}
+	if strings.Contains(curl, "sk-super-secret") {
+		t.Fatal("curl 泄露密钥")
+	}
+}
+
+// PDF：能产出非空 PDF 文件头与 CJK 内容。
+func TestRenderPDF(t *testing.T) {
+	run, rows := sampleRunAndRows()
+	m := &Module{}
+	data, err := renderPDF(m.buildReport(run, rows, false, "张三的K3渠道"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 10*1024 || !strings.HasPrefix(string(data[:5]), "%PDF-") {
+		t.Fatalf("PDF 输出异常: %d bytes", len(data))
 	}
 }
 

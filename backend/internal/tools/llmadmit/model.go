@@ -17,6 +17,9 @@ type Run struct {
 	Channel string `json:"channel"`
 	// Declarations 是能力声明 JSON：{"video":false,...}；未声明支持的能力对应用例豁免。
 	Declarations string `json:"declarations"`
+	// CaseOverrides 是用例级自定义 JSON：{"M-30":"skip"|"exempt"}；
+	// skip=不测试（跳过），exempt=手动豁免（不计入失败）。
+	CaseOverrides string `json:"case_overrides"`
 	// Status: running / pausing / paused / succeeded / failed / aborted
 	Status  string `gorm:"index" json:"status"`
 	Verdict string `json:"verdict"` // 通过 / 不通过 / 无效（闸门不过）/ ""

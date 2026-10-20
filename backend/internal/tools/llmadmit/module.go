@@ -96,13 +96,14 @@ func (m *Module) runDetail(c *gin.Context) {
 }
 
 type createInput struct {
-	BaseURL      string          `json:"base_url"`
-	APIKey       string          `json:"api_key"`
-	Model        string          `json:"model"`
-	Channel      string          `json:"channel"`
-	Suite        string          `json:"suite"`
-	Tier         string          `json:"tier"`
-	Declarations map[string]bool `json:"declarations"`
+	BaseURL      string            `json:"base_url"`
+	APIKey       string            `json:"api_key"`
+	Model        string            `json:"model"`
+	Channel      string            `json:"channel"`
+	Suite        string            `json:"suite"`
+	Tier         string            `json:"tier"`
+	Declarations map[string]bool   `json:"declarations"`
+	Overrides    map[string]string `json:"case_overrides"`
 }
 
 func (m *Module) create(c *gin.Context) {
@@ -150,7 +151,7 @@ func (m *Module) create(c *gin.Context) {
 	if user := module.CurrentUser(c); user != nil {
 		actor = user.Username
 	}
-	run, err := m.runner.Start(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, input.Tier, input.Channel, declarations)
+	run, err := m.runner.Start(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, input.Tier, input.Channel, declarations, input.Overrides)
 	if err != nil {
 		module.Fail(c, err)
 		return
@@ -247,8 +248,16 @@ func (m *Module) respondReport(c *gin.Context, rep report, base string) {
 	case "md":
 		c.Header("Content-Disposition", "attachment; filename=\""+filename+".md\"")
 		c.Data(200, "text/markdown; charset=utf-8", []byte(renderMarkdown(rep)))
+	case "pdf":
+		data, err := renderPDF(rep)
+		if err != nil {
+			module.Fail(c, err)
+			return
+		}
+		c.Header("Content-Disposition", "attachment; filename=\""+filename+".pdf\"")
+		c.Data(200, "application/pdf", data)
 	default:
-		module.Fail(c, service.Problem(400, "format 仅支持 json/md"))
+		module.Fail(c, service.Problem(400, "format 仅支持 json/md/pdf"))
 	}
 }
 

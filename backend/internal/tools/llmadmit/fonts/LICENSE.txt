@@ -1,0 +1,1 @@
+wqy-microhei-sc.ttf 提取自文泉驿微米黑（WenQuanYi Micro Hei），授权 Apache 2.0 / GPLv3（含字体嵌入例外条款），仅用于报告 PDF 渲染。
