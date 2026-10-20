@@ -91,7 +91,10 @@ func NewClient() *Client {
 }
 
 // Get 执行简单 GET（如 /v1/models），返回状态码与正文（截断）。
+// 带整体超时：连接 30s 之外，正文读取同样受限（历史上正文挂死导致用例卡死）。
 func (c *Client) Get(ctx context.Context, t Target, path string) (int, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, TimeoutNormal)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(t.BaseURL, "/")+path, nil)
 	if err != nil {
 		return 0, "", err

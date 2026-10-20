@@ -293,7 +293,7 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 		w.WriteHeader(502)
 	}))
 	defer server.Close()
-	r, _ := setupRunner(t)
+	r, st := setupRunner(t)
 	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
@@ -301,6 +301,12 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	final := waitStatus(t, r, run.ID, 15*time.Second, runFailed)
 	if final.Verdict != "无效" {
 		t.Fatalf("verdict=%s want 无效", final.Verdict)
+	}
+	// 闸门失败后不得有「待执行/运行中」用例残留（界面会误以为卡死）。
+	var left int64
+	st.DB.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", run.ID, []string{suite.StatusPending, suite.StatusRunning}).Count(&left)
+	if left > 0 {
+		t.Fatalf("%d 个用例停留在待执行", left)
 	}
 }
 

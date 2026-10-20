@@ -254,6 +254,9 @@ func (r *Runner) finish(runID, status, verdict, reason string, tierResults map[s
 	r.db.Model(&Run{}).Where("id = ?", runID).Updates(map[string]any{
 		"status": status, "verdict": verdict, "stop_reason": reason, "tier_results": string(results), "finished_at": &now,
 	})
+	// 未执行的用例标记跳过，避免界面永远显示「待执行」。
+	r.db.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", runID, []string{suite.StatusPending, suite.StatusRunning}).
+		Updates(map[string]any{"status": suite.StatusSkipped, "summary": "任务已结束，未执行"})
 }
 
 const (
