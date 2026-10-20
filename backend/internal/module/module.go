@@ -28,8 +28,10 @@ type Module interface {
 	// Register 注册路由，统一挂在 /api/tools/<id>/ 下。
 	// read 已带「工具可见且可用」策略判定；write 在其上再加 CSRF 校验，
 	// 所有 POST/PUT/DELETE 必须挂 write。
+	// pub 不带任何鉴权，供必须被外部系统（如被测网关）直接拉取的资源使用；
+	// 模块必须自行用一次性/任务级 token 保护 pub 端点，严禁放任何敏感数据。
 	// 不得注册名为 access 的子路径（与平台 /api/tools/:id/access 冲突）。
-	Register(read, write *gin.RouterGroup, d Deps)
+	Register(read, write, pub *gin.RouterGroup, d Deps)
 }
 
 // Deps 是平台提供给模块的共享能力；模块不得另开数据库连接。

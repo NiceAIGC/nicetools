@@ -11,9 +11,9 @@ import (
 
 type stub struct{ id string }
 
-func (s stub) ID() string                                    { return s.id }
-func (s stub) Migrate(db *gorm.DB) error                     { return nil }
-func (s stub) Register(read, write *gin.RouterGroup, d Deps) {}
+func (s stub) ID() string                                         { return s.id }
+func (s stub) Migrate(db *gorm.DB) error                          { return nil }
+func (s stub) Register(read, write, pub *gin.RouterGroup, d Deps) {}
 
 func TestVerifyCatalog(t *testing.T) {
 	entries := map[string]model.Catalog{

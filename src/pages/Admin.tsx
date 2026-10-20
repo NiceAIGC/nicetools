@@ -35,6 +35,7 @@ import GroupEditor from "../components/admin/GroupEditor";
 import PolicyEditor from "../components/admin/PolicyEditor";
 import ToolMetaEditor, { type ToolMetaBody } from "../components/admin/ToolMetaEditor";
 import CategoryEditor, { type CategoryBody } from "../components/admin/CategoryEditor";
+import AdmissionConfig from "../components/admin/AdmissionConfig";
 
 type Editor =
   | { kind: "user"; user: User | null }
@@ -50,6 +51,7 @@ const sections: Record<string, { title: string; description: string }> = {
   groups: { title: "用户组", description: "按团队或使用场景组织账号，统一分配工具权限。" },
   tools: { title: "工具管理", description: "自定义工具名称、Logo、说明、分类、标签，并配置访问权限。" },
   categories: { title: "工具分类", description: "维护首页分类的名称、说明与展示顺序。" },
+  admission: { title: "准入配置", description: "大模型准入测试的用例级别与默认执行方式，永久生效。" },
   audit: { title: "审计记录", description: "查看最新 200 条账号、权限与登录操作。" },
 };
 
@@ -355,6 +357,12 @@ export default function Admin() {
           </div>
         </Tab>
 
+        <Tab key="admission" title={<div className="text-left">准入配置</div>}>
+          <div className="flex min-w-0 flex-col gap-5">
+            {panelHeader}
+            <AdmissionConfig />
+          </div>
+        </Tab>
         <Tab key="audit" title={<div className="text-left">审计记录</div>}>
           <div className="flex min-w-0 flex-col gap-5">
             {panelHeader}

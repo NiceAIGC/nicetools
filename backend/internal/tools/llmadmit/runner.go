@@ -34,18 +34,19 @@ type Runner struct {
 	db     *gorm.DB
 	svc    *service.Service
 	suites map[string]suite.Suite
+	origin string // 公网地址（媒体托管 URL 用），空则降级
 
 	// active 受通道容量 1 保护：占用即单飞。
 	slot   chan struct{}
 	cancel context.CancelFunc
 }
 
-func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite) *Runner {
+func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOrigin string) *Runner {
 	byID := make(map[string]suite.Suite, len(suites))
 	for _, s := range suites {
 		byID[s.ID] = s
 	}
-	return &Runner{db: db, svc: svc, suites: byID, slot: make(chan struct{}, 1)}
+	return &Runner{db: db, svc: svc, suites: byID, origin: publicOrigin, slot: make(chan struct{}, 1)}
 }
 
 // Recover 在服务重启后把中断的任务标记为 aborted（已完成用例留档不丢）。
@@ -102,13 +103,31 @@ func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tie
 			return Run{}, service.Problem(400, "用例覆盖取值仅支持 skip/exempt")
 		}
 	}
+	// 合并管理员永久配置：mode 作为默认（任务级覆盖优先），level 直接改写用例级别。
+	var cfgs []CaseCfg
+	if err := r.db.Where("suite = ?", s.ID).Find(&cfgs).Error; err != nil {
+		return Run{}, err
+	}
+	levelOf := map[string]string{}
+	merged := map[string]string{}
+	for _, cfg := range cfgs {
+		if cfg.Mode != "" {
+			merged[cfg.CaseID] = cfg.Mode
+		}
+		if cfg.Level != "" {
+			levelOf[cfg.CaseID] = cfg.Level
+		}
+	}
+	for id, mode := range overrides {
+		merged[id] = mode
+	}
 	declJSON, _ := json.Marshal(declarations)
-	ovrJSON, _ := json.Marshal(overrides)
+	ovrJSON, _ := json.Marshal(merged)
 	run := Run{
 		ID: newRunID(), CreatedBy: createdBy, Suite: s.ID, SuiteName: s.Name,
 		BaseURL: target.BaseURL, APIKey: target.APIKey, Model: target.Model, Channel: channel,
 		Tier: tier, Declarations: string(declJSON), CaseOverrides: string(ovrJSON), Status: runRunning,
-		TotalCases: len(cases), CreatedAt: time.Now(),
+		MediaToken: newRunID(), TotalCases: len(cases), CreatedAt: time.Now(),
 	}
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&run).Error; err != nil {
@@ -118,7 +137,11 @@ func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tie
 		for _, t := range s.Tiers {
 			for _, c := range t.Cases {
 				seq++
-				row := CaseResult{RunID: run.ID, Seq: seq, CaseID: c.ID, Tier: t.ID, Name: c.Name, Level: string(c.Level), Status: suite.StatusPending, Metrics: "{}", Defects: "[]"}
+				level := string(c.Level)
+				if override := levelOf[c.ID]; override != "" {
+					level = override
+				}
+				row := CaseResult{RunID: run.ID, Seq: seq, CaseID: c.ID, Tier: t.ID, Name: c.Name, Level: level, Status: suite.StatusPending, Metrics: "{}", Defects: "[]"}
 				if err := tx.Create(&row).Error; err != nil {
 					return err
 				}
@@ -256,17 +279,48 @@ func (r *Runner) loop(ctx context.Context, runID string) {
 			break
 		}
 	}
-	failedTiers := []string{}
-	for id, v := range tierResults {
-		if v != tierPassed {
-			failedTiers = append(failedTiers, id)
+	// 裁决不写「是否通过」，按级别统计未通过项（P0×n、P1×n …）。
+	var rows []CaseResult
+	r.db.Where("run_id = ?", runID).Find(&rows)
+	total := map[string]int{}
+	perTier := map[string]map[string]int{}
+	for _, row := range rows {
+		if row.Status != suite.StatusFailed {
+			continue
+		}
+		level := normalizeLevel(row.Level)
+		total[level]++
+		if perTier[row.Tier] == nil {
+			perTier[row.Tier] = map[string]int{}
+		}
+		perTier[row.Tier][level]++
+	}
+	verdict := verdictText(total)
+	tierSummary := map[string]string{}
+	for _, tier := range s.Tiers {
+		tierSummary[tier.ID] = verdictText(perTier[tier.ID])
+		if tier.ID == run.Tier {
+			break
 		}
 	}
-	if len(failedTiers) == 0 {
-		r.finish(runID, runSucceeded, "通过", "", tierResults)
-		return
+	status := runSucceeded
+	if verdict != "0 项未通过" {
+		status = runFailed
 	}
-	r.finish(runID, runFailed, "不通过", strings.Join(failedTiers, "/")+" 档未通过", tierResults)
+	r.finish(runID, status, verdict, verdictReason(verdict, tierSummary), tierSummary)
+}
+
+func verdictReason(verdict string, perTier map[string]string) string {
+	if verdict == "0 项未通过" {
+		return ""
+	}
+	parts := []string{}
+	for _, tier := range []string{"F", "M", "S"} {
+		if text, ok := perTier[tier]; ok && text != "0 项未通过" {
+			parts = append(parts, tier+" 档 "+text)
+		}
+	}
+	return strings.Join(parts, "；")
 }
 
 func (r *Runner) finish(runID, status, verdict, reason string, tierResults map[string]string) {
@@ -372,7 +426,13 @@ func (r *Runner) execute(ctx context.Context, run Run, c suite.Case, target suit
 	r.db.Model(row).Updates(map[string]any{"status": suite.StatusRunning, "started_at": &now})
 	caseCtx := &suite.CaseCtx{
 		Context: ctx, Target: target, Client: suite.NewClient(),
-		Declared:     declared,
+		Declared: declared,
+		MediaURL: func(name string) string {
+			if r.origin == "" || run.MediaToken == "" {
+				return ""
+			}
+			return fmt.Sprintf("%s/api/tools/llm-admission/pub/media/%s/%s", r.origin, run.MediaToken, name)
+		},
 		CheckControl: r.control(ctx, run.ID),
 	}
 	var out suite.Outcome

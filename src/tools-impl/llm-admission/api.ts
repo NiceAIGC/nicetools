@@ -65,6 +65,25 @@ export interface CreateInput {
 }
 
 export type ExportFormat = "json" | "md" | "pdf";
+export type ExportDetail = "full" | "brief";
+export type ExportType = "full" | "masked";
+
+export interface CaseCfg {
+  case_id: string;
+  mode: "" | "skip" | "exempt";
+  level: "" | "P0" | "P1" | "P2" | "P3";
+}
+
+export const listCaseCfg = () => toolApi<CaseCfg[]>(ID, "/config");
+export const saveCaseCfg = (suite: string, cfgs: CaseCfg[]) =>
+  toolApi(ID, "/config", json("PUT", { suite, cfgs }));
+
+export function exportUrl(base: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
+  const params = new URLSearchParams({ type, format });
+  if (detail === "brief") params.set("detail", "brief");
+  if (channel) params.set("channel", channel);
+  return `${base}?${params}`;
+}
 
 export const listSuites = () => toolApi<SuiteInfo[]>(ID, "/suites");
 export const listRuns = () => toolApi<Run[]>(ID, "/runs");
@@ -74,14 +93,10 @@ export const pauseRun = (id: string) => toolApi(ID, `/runs/${id}/pause`, json("P
 export const resumeRun = (id: string) => toolApi(ID, `/runs/${id}/resume`, json("POST", {}));
 export const abortRun = (id: string) => toolApi(ID, `/runs/${id}/abort`, json("POST", {}));
 
-export function exportRun(id: string, type: "full" | "masked", format: ExportFormat, channel?: string) {
-  const params = new URLSearchParams({ type, format });
-  if (channel) params.set("channel", channel);
-  window.open(`/api/tools/${ID}/runs/${id}/export?${params}`, "_blank");
+export function exportRun(id: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
+  window.open(exportUrl(`/api/tools/${ID}/runs/${id}/export`, type, format, detail, channel), "_blank");
 }
 
-export function exportMerged(ids: string[], type: "full" | "masked", format: ExportFormat, channel?: string) {
-  const params = new URLSearchParams({ ids: ids.join(","), type, format });
-  if (channel) params.set("channel", channel);
-  window.open(`/api/tools/${ID}/export/merged?${params}`, "_blank");
+export function exportMerged(ids: string[], type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
+  window.open(exportUrl(`/api/tools/${ID}/export/merged?ids=${ids.join(",")}`, type, format, detail, channel), "_blank");
 }

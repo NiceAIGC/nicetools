@@ -17,6 +17,7 @@ const Watermark = "niceaigc"
 type report struct {
 	Watermark    string          `json:"watermark"`
 	Masked       bool            `json:"masked"`
+	Brief        bool            `json:"brief,omitempty"` // 精简版：无请求/响应原文
 	Standard     string          `json:"standard"`
 	Environment  environment     `json:"environment"`
 	Verdict      string          `json:"verdict"`
@@ -109,20 +110,52 @@ func (m *Module) docMap(suiteID string) map[string]suite.CaseDoc {
 }
 
 // levelNote 是用例级别的人类可读含义（哪些必须达到、哪些可豁免）。
+// 兼容历史库中的 required/record/optional 写法。
 func levelNote(level string) string {
 	switch level {
-	case string(suite.LevelP0):
+	case "P0":
 		return "P0 否决项（任一失败当档不通过）"
-	case string(suite.LevelRequired):
-		return "必过项（必须达到）"
-	case string(suite.LevelRecord):
-		return "记录项（产出数据，不影响通过）"
-	case string(suite.LevelOptional):
-		return "可选项（声明支持才必须达到，未声明可豁免）"
-	case string(suite.LevelGate):
+	case "P1", "required":
+		return "P1 必过项（必须达到）"
+	case "P2", "record":
+		return "P2 记录项（产出数据，不影响通过）"
+	case "P3", "optional":
+		return "P3 可选项（声明支持才必须达到，未声明可豁免）"
+	case "gate":
 		return "前置闸门（不通过则整次测试无效）"
 	}
 	return level
+}
+
+// normalizeLevel 把历史级别名归一到 P0–P3，供计数统计。
+func normalizeLevel(level string) string {
+	switch level {
+	case "required":
+		return "P1"
+	case "record":
+		return "P2"
+	case "optional":
+		return "P3"
+	}
+	return level
+}
+
+// verdictText 按级别统计未通过项；全部通过时为「0 项未通过」。
+func verdictText(counts map[string]int) string {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	if total == 0 {
+		return "0 项未通过"
+	}
+	parts := []string{}
+	for _, level := range []string{"P0", "P1", "P2", "P3"} {
+		if counts[level] > 0 {
+			parts = append(parts, fmt.Sprintf("%s×%d", level, counts[level]))
+		}
+	}
+	return fmt.Sprintf("%d 项未通过（%s）", total, strings.Join(parts, "、"))
 }
 
 // curlExample 把一次证据请求还原为可复现的 curl 命令；密钥一律打码，脱敏报告同时隐藏主机。
@@ -159,7 +192,7 @@ func enrichEvidence(raw string, baseURL string, masked bool) json.RawMessage {
 }
 
 // buildReport 装配单任务导出；channel 非空时覆盖任务上的渠道名。
-func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel string) report {
+func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel string, brief ...bool) report {
 	rep := report{
 		Watermark:  Watermark,
 		Masked:     masked,
@@ -189,13 +222,15 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 		rep.Environment.EndedAt = run.FinishedAt.Format(time.RFC3339)
 	}
 	_ = json.Unmarshal([]byte(run.Declarations), &rep.Declarations)
-	rep.Cases, rep.Defects = reportRows(rows, run.BaseURL, masked, m.docMap(run.Suite))
+	isBrief := len(brief) > 0 && brief[0]
+	rep.Cases, rep.Defects = reportRows(rows, run.BaseURL, masked, m.docMap(run.Suite), isBrief)
+	rep.Brief = isBrief
 	return rep
 }
 
 // buildMergedReport 合并多次任务为一份报告：同一用例取最新一次结果，
 // 环境与渠道名取最新任务（channel 非空时覆盖）；裁决按合并视图重算。
-func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult, masked bool, channel string) report {
+func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult, masked bool, channel string, brief ...bool) report {
 	// runs 按创建时间升序；最新任务提供环境。
 	newest := runs[len(runs)-1]
 	rep := m.buildReport(newest, nil, masked, channel)
@@ -231,11 +266,10 @@ func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult,
 		}
 		return merged[i].Seq < merged[j].Seq
 	})
-	rep.Cases, rep.Defects = reportRows(merged, newest.BaseURL, masked, m.docMap(newest.Suite))
+	isBrief := len(brief) > 0 && brief[0]
+	rep.Cases, rep.Defects = reportRows(merged, newest.BaseURL, masked, m.docMap(newest.Suite), isBrief)
+	rep.Brief = isBrief
 	rep.Verdict = mergedVerdict(rep.Cases)
-	if rep.Verdict != "通过" {
-		rep.StopReason = "合并视图存在未通过档位"
-	}
 	return rep
 }
 
@@ -250,36 +284,20 @@ func tierRank(tier string) int {
 	}
 }
 
-// mergedVerdict 重算合并视图裁决：某档有 P0/required 失败或 P1 ≥ 3 → 不通过。
+// mergedVerdict 重算合并视图裁决：按级别统计未通过项。
 func mergedVerdict(cases []caseRow) string {
-	p1 := map[string]int{}
-	failed := false
+	counts := map[string]int{}
 	for _, c := range cases {
-		if c.Status == suite.StatusFailed && (c.Level == string(suite.LevelP0) || c.Level == string(suite.LevelRequired)) {
-			failed = true
-		}
-		var defects []suite.Defect
-		if json.Unmarshal(c.Defects, &defects) == nil {
-			for _, d := range defects {
-				if d.Level == "P1" {
-					p1[c.Tier]++
-				}
-			}
+		if c.Status == suite.StatusFailed {
+			counts[normalizeLevel(c.Level)]++
 		}
 	}
-	for _, n := range p1 {
-		if n >= 3 {
-			failed = true
-		}
-	}
-	if failed {
-		return "不通过"
-	}
-	return "通过"
+	return verdictText(counts)
 }
 
 // reportRows 把用例行转为导出结构；masked 时脱敏。
-func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]suite.CaseDoc) ([]caseRow, []defectRow) {
+func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]suite.CaseDoc, brief ...bool) ([]caseRow, []defectRow) {
+	isBrief := len(brief) > 0 && brief[0]
 	var cases []caseRow
 	var defects []defectRow
 	for _, row := range rows {
@@ -291,8 +309,9 @@ func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]
 			Metrics: json.RawMessage(row.Metrics), Defects: json.RawMessage(row.Defects),
 			EvidenceSHA: row.EvidenceSHA,
 		}
-		// 证据原文（含 curl 示例）只进详细报告；脱敏版完全剔除请求/响应体。
-		if !masked && row.Evidence != "" {
+		// 证据原文（含 curl 示例）只进「详细且未脱敏」的报告；
+		// 脱敏版与精简版都不带请求/响应体（精简版保留说明/判据/缺陷解释）。
+		if !masked && !isBrief && row.Evidence != "" {
 			if enriched := enrichEvidence(row.Evidence, baseURL, false); enriched != nil {
 				cr.Evidence = enriched
 			} else {
@@ -351,6 +370,9 @@ func renderMarkdown(rep report) string {
 	fmt.Fprintf(&b, "# %s 准入测试报告\n\n> 本报告由 **%s** 准入测试系统生成\n\n", rep.Standard, Watermark)
 	if rep.Masked {
 		b.WriteString("> ⚠️ 脱敏版：已隐去测试目标地址、密钥与 request_id\n\n")
+	}
+	if rep.Brief {
+		b.WriteString("> 📄 精简版：不含请求/响应原文，保留用例说明、判据与缺陷解释\n\n")
 	}
 	b.WriteString("## 环境\n\n")
 	channel := rep.Environment.Channel

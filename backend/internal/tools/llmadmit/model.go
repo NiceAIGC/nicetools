@@ -20,6 +20,8 @@ type Run struct {
 	// CaseOverrides 是用例级自定义 JSON：{"M-30":"skip"|"exempt"}；
 	// skip=不测试（跳过），exempt=手动豁免（不计入失败）。
 	CaseOverrides string `json:"case_overrides"`
+	// MediaToken 是测试媒体（视频/图片）公开拉取的一次性令牌，不进 API 响应。
+	MediaToken string `json:"-"`
 	// Status: running / pausing / paused / succeeded / failed / aborted
 	Status  string `gorm:"index" json:"status"`
 	Verdict string `json:"verdict"` // 通过 / 不通过 / 无效（闸门不过）/ ""
@@ -59,3 +61,14 @@ type CaseResult struct {
 }
 
 func (CaseResult) TableName() string { return "tool_llmadmit_cases" }
+
+// CaseCfg 是管理员级用例永久配置（规范 §6 第三层）：
+// mode=skip/exempt 给所有新任务的默认值；level 非空时覆盖用例级别（P0/P1/P2/P3）。
+type CaseCfg struct {
+	Suite  string `gorm:"primaryKey" json:"suite"`
+	CaseID string `gorm:"primaryKey" json:"case_id"`
+	Mode   string `json:"mode"`  // "" / skip / exempt
+	Level  string `json:"level"` // "" / P0 / P1 / P2 / P3
+}
+
+func (CaseCfg) TableName() string { return "tool_llmadmit_casecfg" }

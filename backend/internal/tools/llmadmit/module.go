@@ -31,12 +31,12 @@ func New() *Module { return &Module{} }
 func (m *Module) ID() string { return "llm-admission" }
 
 func (m *Module) Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(&Run{}, &CaseResult{})
+	return db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{})
 }
 
-func (m *Module) Register(read, write *gin.RouterGroup, d module.Deps) {
+func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	m.db = d.DB
-	m.runner = NewRunner(d.DB, d.Service, Suites())
+	m.runner = NewRunner(d.DB, d.Service, Suites(), d.Config.PublicOrigin)
 	// 重启恢复：中断任务标记 aborted，已完成用例留档不丢。
 	if err := m.runner.Recover(); err != nil {
 		panic(err)
@@ -47,6 +47,9 @@ func (m *Module) Register(read, write *gin.RouterGroup, d module.Deps) {
 	read.GET("/runs/:rid", m.runDetail)
 	read.GET("/runs/:rid/export", m.export)
 	read.GET("/export/merged", m.exportMerged)
+	read.GET("/config", m.getConfig)
+	write.PUT("/config", m.putConfig)
+	pub.GET("/media/:token/:name", m.media)
 	write.POST("/runs", m.create)
 	write.POST("/runs/:rid/pause", func(c *gin.Context) { m.control(c, m.runner.Pause) })
 	write.POST("/runs/:rid/resume", func(c *gin.Context) { m.control(c, m.runner.Resume) })
@@ -55,6 +58,120 @@ func (m *Module) Register(read, write *gin.RouterGroup, d module.Deps) {
 
 func (m *Module) suites(c *gin.Context) {
 	c.JSON(200, Suites())
+}
+
+// requireAdminUser 要求登录且为管理员（后台配置接口用）。
+func (m *Module) requireAdminUser(c *gin.Context) bool {
+	user := module.CurrentUser(c)
+	if user == nil || user.Role != "admin" {
+		module.Fail(c, service.Problem(403, "需要管理员权限"))
+		return false
+	}
+	return true
+}
+
+// getConfig 返回全部用例永久配置（管理员级默认）。
+func (m *Module) getConfig(c *gin.Context) {
+	if !m.requireAdminUser(c) {
+		return
+	}
+	var cfgs []CaseCfg
+	if err := m.db.Find(&cfgs).Error; err != nil {
+		module.Fail(c, err)
+		return
+	}
+	if cfgs == nil {
+		cfgs = []CaseCfg{}
+	}
+	c.JSON(200, cfgs)
+}
+
+// putConfig 保存用例永久配置：整体替换（键不存在或取值非法 400）。
+func (m *Module) putConfig(c *gin.Context) {
+	if !m.requireAdminUser(c) {
+		return
+	}
+	var input struct {
+		Suite string    `json:"suite"`
+		Cfgs  []CaseCfg `json:"cfgs"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		module.Fail(c, service.Problem(400, "请求 JSON 无效"))
+		return
+	}
+	var chosen suite.Suite
+	found := false
+	for _, s := range Suites() {
+		if s.ID == input.Suite {
+			chosen, found = s, true
+			break
+		}
+	}
+	if !found {
+		module.Fail(c, service.Problem(400, "测试标准不存在"))
+		return
+	}
+	validIDs := map[string]bool{}
+	for _, t := range chosen.Tiers {
+		for _, cs := range t.Cases {
+			validIDs[cs.ID] = true
+		}
+	}
+	validLevel := map[string]bool{"": true, "P0": true, "P1": true, "P2": true, "P3": true}
+	for _, cfg := range input.Cfgs {
+		if !validIDs[cfg.CaseID] {
+			module.Fail(c, service.Problem(400, "用例不存在: "+cfg.CaseID))
+			return
+		}
+		if cfg.Mode != "" && cfg.Mode != "skip" && cfg.Mode != "exempt" {
+			module.Fail(c, service.Problem(400, "mode 仅支持 skip/exempt"))
+			return
+		}
+		if !validLevel[cfg.Level] {
+			module.Fail(c, service.Problem(400, "level 仅支持 P0/P1/P2/P3"))
+			return
+		}
+	}
+	err := m.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("suite = ?", input.Suite).Delete(&CaseCfg{}).Error; err != nil {
+			return err
+		}
+		for i := range input.Cfgs {
+			input.Cfgs[i].Suite = input.Suite
+			if input.Cfgs[i].Mode == "" && input.Cfgs[i].Level == "" {
+				continue
+			}
+			if err := tx.Create(&input.Cfgs[i]).Error; err != nil {
+				return err
+			}
+		}
+		return service.Audit(tx, "admin", "llmadmit.config.save", input.Suite)
+	})
+	if err != nil {
+		module.Fail(c, service.DBError(err))
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// media 按任务令牌提供测试媒体（红/蓝视频），供被测网关直接拉取（双通道验证）。
+func (m *Module) media(c *gin.Context) {
+	var run Run
+	if err := m.db.Where("media_token = ?", c.Param("token")).First(&run).Error; err != nil {
+		c.AbortWithStatusJSON(404, gin.H{"error": "媒体不存在"})
+		return
+	}
+	var data []byte
+	switch c.Param("name") {
+	case "red.mp4":
+		data = k3.RedMP4()
+	case "blue.mp4":
+		data = k3.BlueMP4()
+	default:
+		c.AbortWithStatusJSON(404, gin.H{"error": "媒体不存在"})
+		return
+	}
+	c.Data(200, "video/mp4", data)
 }
 
 func (m *Module) runs(c *gin.Context) {
@@ -197,7 +314,7 @@ func (m *Module) export(c *gin.Context) {
 		module.Fail(c, err)
 		return
 	}
-	rep := m.buildReport(run, rows, c.DefaultQuery("type", "full") == "masked", c.Query("channel"))
+	rep := m.buildReport(run, rows, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
 	m.respondReport(c, rep, "llmadmit-"+run.ID)
 }
 
@@ -226,7 +343,7 @@ func (m *Module) exportMerged(c *gin.Context) {
 		}
 		rowsByID[run.ID] = rows
 	}
-	rep := m.buildMergedReport(runs, rowsByID, c.DefaultQuery("type", "full") == "masked", c.Query("channel"))
+	rep := m.buildMergedReport(runs, rowsByID, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
 	m.respondReport(c, rep, "llmadmit-merged")
 }
 

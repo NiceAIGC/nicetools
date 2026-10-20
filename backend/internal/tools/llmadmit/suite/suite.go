@@ -7,14 +7,15 @@ import (
 	"time"
 )
 
-// Level 是用例级别，决定失败时对当档 verdict 的影响。
+// Level 是用例级别（P0–P3），决定失败对裁决的影响；历史库中的
+// required/record/optional 分别对应 P1/P2/P3，展示层做了兼容。
 type Level string
 
 const (
-	LevelP0       Level = "P0"       // 否决项：失败即当档不通过并终止
-	LevelRequired Level = "required" // 必过项：失败即当档不通过
-	LevelRecord   Level = "record"   // 记录项：产出数据，不影响通过
-	LevelOptional Level = "optional" // 可选项：声明支持才必须过
+	LevelP0       Level = "P0" // 否决项
+	LevelRequired Level = "P1" // 必过项
+	LevelRecord   Level = "P2" // 记录项：产出数据，不影响通过
+	LevelOptional Level = "P3" // 可选项：声明支持才必须过
 	// LevelGate 是前置闸门（§3）：失败 → 本次测试无效，不产出 P0/P1 结论。
 	LevelGate Level = "gate"
 )
@@ -68,6 +69,9 @@ type CaseCtx struct {
 	Client *Client
 	// Declared 返回能力是否被声明支持（未声明 → 对应用例豁免）。
 	Declared func(capability string) bool
+	// MediaURL 返回测试媒体（红/蓝视频等）的可公开拉取地址（带任务令牌）；
+	// 未配置时返回空串，URL 类用例应降级为记录。
+	MediaURL func(name string) string
 	// CheckControl 供长耗时用例在内部循环检查暂停/终止；
 	// 返回非 nil 时用例应立即收尾返回该错误。
 	CheckControl func() error

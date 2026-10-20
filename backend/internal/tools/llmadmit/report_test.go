@@ -161,8 +161,8 @@ func TestMergedReport(t *testing.T) {
 	if rep.Environment.Channel != "张三的K3渠道" {
 		t.Fatalf("channel=%s", rep.Environment.Channel)
 	}
-	if rep.Verdict != "通过" {
-		t.Fatalf("verdict=%s want 通过（F-01 最新已通过）", rep.Verdict)
+	if rep.Verdict != "0 项未通过" {
+		t.Fatalf("verdict=%s want 0 项未通过", rep.Verdict)
 	}
 	if len(rep.Merged) != 2 {
 		t.Fatalf("merged runs=%d", len(rep.Merged))

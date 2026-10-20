@@ -33,6 +33,9 @@ import {
   abortRun,
   runDetail,
   type CaseRow,
+  type ExportDetail,
+  type ExportFormat,
+  type ExportType,
   type Run,
   type SuiteInfo,
 } from "./api";
@@ -91,6 +94,37 @@ const caseLabel: Record<string, string> = {
   skipped: "跳过",
 };
 
+const levelNote: Record<string, string> = {
+  P0: "P0 否决项",
+  P1: "P1 必过项",
+  P2: "P2 记录项",
+  P3: "P3 可选项",
+  gate: "前置闸门",
+  required: "P1 必过项",
+  record: "P2 记录项",
+  optional: "P3 可选项",
+};
+
+// 用例行的展开详情：实测摘要 + 用例说明 + 缺陷。
+function CaseDetail({ row, doc }: { row: CaseRow; doc?: { purpose: string; method: string; expect: string; ref: string } }) {
+  let defects: { level: string; expect: string; actual: string; attribution: string }[] = [];
+  try {
+    defects = JSON.parse(row.defects || "[]");
+  } catch { /* 忽略坏数据 */ }
+  return (
+    <div className="ml-24 flex flex-col gap-1 border-l-2 border-default-200 py-1 pl-3 text-xs text-default-500">
+      <p><span className="text-default-400">级别：</span>{levelNote[row.level] ?? row.level}</p>
+      {doc?.purpose && <p><span className="text-default-400">为什么测：</span>{doc.purpose}</p>}
+      {doc?.method && <p><span className="text-default-400">怎么测：</span>{doc.method}</p>}
+      {doc?.expect && <p><span className="text-default-400">预期：</span>{doc.expect}{doc.ref ? `（${doc.ref}）` : ""}</p>}
+      {row.summary && <p><span className="text-default-400">实测：</span>{row.summary}</p>}
+      {defects.map((d, i) => (
+        <p key={i}><span className="text-default-400">缺陷[{d.level}]：</span>期望 {d.expect}；实测 {d.actual}；归因 {d.attribution}</p>
+      ))}
+    </div>
+  );
+}
+
 export default function LlmAdmission() {
   const [suites, setSuites] = useState<SuiteInfo[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -109,6 +143,10 @@ export default function LlmAdmission() {
   const [submitting, setSubmitting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exportChannel, setExportChannel] = useState("");
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [exDetail, setExDetail] = useState<ExportDetail>("full");
+  const [exType, setExType] = useState<ExportType>("full");
+  const [exFormat, setExFormat] = useState<ExportFormat>("pdf");
 
   const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
   // 目标档位及其前置档位的全部用例（如选 M 则显示 F+M）。
@@ -313,7 +351,7 @@ export default function LlmAdmission() {
                 {statusLabel[detail.run.status]}
               </Chip>
               {detail.run.verdict && (
-                <Chip size="sm" color={detail.run.verdict === "通过" ? "success" : "danger"} variant="solid">
+                <Chip size="sm" color={detail.run.verdict.startsWith("0 项") ? "success" : "danger"} variant="solid">
                   {detail.run.verdict}
                 </Chip>
               )}
@@ -328,12 +366,20 @@ export default function LlmAdmission() {
                 {["running", "pausing", "paused"].includes(detail.run.status) && (
                   <Button size="sm" color="danger" variant="light" onPress={() => act(abortRun, detail.run.id, "已终止")}>终止</Button>
                 )}
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "pdf", exportChannel || undefined)}>详细 PDF</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "md", exportChannel || undefined)}>详细 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "full", "json", exportChannel || undefined)}>详细 JSON</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "pdf", exportChannel || undefined)}>脱敏 PDF</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "md", exportChannel || undefined)}>脱敏 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportRun(detail.run.id, "masked", "json", exportChannel || undefined)}>脱敏 JSON</Button>
+                <Select aria-label="内容" size="sm" className="w-28" selectedKeys={[exDetail]} onChange={(e) => setExDetail(e.target.value as ExportDetail)}>
+                  <SelectItem key="full">详细版</SelectItem>
+                  <SelectItem key="brief">精简版</SelectItem>
+                </Select>
+                <Select aria-label="脱敏" size="sm" className="w-24" selectedKeys={[exType]} onChange={(e) => setExType(e.target.value as ExportType)}>
+                  <SelectItem key="full">不脱敏</SelectItem>
+                  <SelectItem key="masked">脱敏</SelectItem>
+                </Select>
+                <Select aria-label="格式" size="sm" className="w-24" selectedKeys={[exFormat]} onChange={(e) => setExFormat(e.target.value as ExportFormat)}>
+                  <SelectItem key="pdf">PDF</SelectItem>
+                  <SelectItem key="md">MD</SelectItem>
+                  <SelectItem key="json">JSON</SelectItem>
+                </Select>
+                <Button size="sm" color="primary" variant="flat" onPress={() => exportRun(detail.run.id, exType, exFormat, exDetail, exportChannel || undefined)}>导出</Button>
               </div>
             </div>
             <Progress
@@ -345,15 +391,36 @@ export default function LlmAdmission() {
             <Divider />
             <div className="flex flex-col gap-1">
               {detail.cases.map((row) => (
-                <div key={row.id} className="flex items-center gap-2 py-1 text-sm">
-                  <Chip size="sm" variant="flat" color={caseColor[row.status]} className="w-16 justify-center">
-                    {caseLabel[row.status]}
-                  </Chip>
-                  <span className="w-20 shrink-0 font-mono text-xs text-default-400">{row.tier}-{row.case_id}</span>
-                  <span className="shrink-0">{row.name}</span>
-                  {row.level === "P0" && <Chip size="sm" color="danger" variant="bordered">P0</Chip>}
-                  <span className="min-w-0 flex-1 truncate text-xs text-default-400">{row.summary}</span>
-                  {row.duration_ms > 0 && <span className="text-xs text-default-300">{(row.duration_ms / 1000).toFixed(1)}s</span>}
+                <div key={row.id}>
+                  <div
+                    className="flex cursor-pointer items-center gap-2 py-1 text-sm hover:bg-default-50"
+                    onClick={() =>
+                      setExpanded((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(row.id)) next.delete(row.id);
+                        else next.add(row.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <Chip size="sm" variant="flat" color={caseColor[row.status]} className="w-16 justify-center">
+                      {caseLabel[row.status]}
+                    </Chip>
+                    <span className="w-20 shrink-0 font-mono text-xs text-default-400">{row.tier}-{row.case_id}</span>
+                    <span className="shrink-0">{row.name}</span>
+                    <Chip size="sm" variant="bordered" color={row.level === "P0" ? "danger" : "default"}>
+                      {levelNote[row.level] ?? row.level}
+                    </Chip>
+                    <span className="min-w-0 flex-1 truncate text-xs text-default-400">{row.summary}</span>
+                    {row.duration_ms > 0 && <span className="text-xs text-default-300">{(row.duration_ms / 1000).toFixed(1)}s</span>}
+                    <span className="text-xs text-default-400">{expanded.has(row.id) ? "▲" : "▼"}</span>
+                  </div>
+                  {expanded.has(row.id) && (
+                    <CaseDetail
+                      row={row}
+                      doc={suite.tiers.find((t) => t.id === row.tier)?.cases.find((cs) => cs.id === row.case_id)?.doc}
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -376,12 +443,7 @@ export default function LlmAdmission() {
             {selected.size > 0 && (
               <>
                 <span className="text-xs text-default-400">已选 {selected.size} 个任务</span>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "pdf", exportChannel || undefined)}>合并详细 PDF</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "md", exportChannel || undefined)}>合并详细 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "full", "json", exportChannel || undefined)}>合并详细 JSON</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "pdf", exportChannel || undefined)}>合并脱敏 PDF</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "md", exportChannel || undefined)}>合并脱敏 MD</Button>
-                <Button size="sm" variant="bordered" onPress={() => exportMerged([...selected], "masked", "json", exportChannel || undefined)}>合并脱敏 JSON</Button>
+                <Button size="sm" color="primary" variant="flat" onPress={() => exportMerged([...selected], exType, exFormat, exDetail, exportChannel || undefined)}>合并导出</Button>
               </>
             )}
           </div>

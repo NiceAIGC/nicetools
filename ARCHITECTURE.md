@@ -29,13 +29,15 @@ internal/httpapi      平台路由、安全中间件、模块装配
 type Module interface {
     ID() string                                    // 必须等于 catalog.json 中的 id
     Migrate(db *gorm.DB) error                     // 建表/迁移，启动时装配路由前调用
-    Register(read, write *gin.RouterGroup, d Deps) // 挂在 /api/tools/<id>/ 下
+    Register(read, write, pub *gin.RouterGroup, d Deps) // 挂在 /api/tools/<id>/ 下
 }
 ```
 
 - `read` 已带平台「工具可见且可用」策略判定（与 `/api/tools/:id/access` 同一套 GroupRule 逻辑），
   不可见 404、可见不可用 403，模块自己不写权限判断（除非有工具内子权限）。
 - `write` 在 `read` 之上再加 CSRF 校验；**所有 POST/PUT/DELETE 必须挂 `write`**。
+- `pub`（`/api/tools/<id>/pub/`）免鉴权，仅供必须被外部系统直接拉取的资源
+  （如被测网关拉测试媒体）；模块必须用一次性/任务级 token 自行保护，严禁放敏感数据。
 - `Deps` 提供 `DB / Service / Config`；模块不得另开数据库连接。
 - 模块 handler 用 `module.CurrentUser(c)` 取登录用户（游客为 nil）。
 
@@ -91,9 +93,9 @@ type Module interface {
 
 工具的可调行为（用例开关、阈值、默认参数等）遵循同一模式，后续工具一律照此设计：
 
-1. **配置三层**：套件/工具自带默认值（代码）→ 任务级覆盖（用户每次使用时调整，随任务入库）→
-   全局默认覆盖（管理员级，存模块私有表）。前两层必做，第三层在第二个工具需要时再抽公共实现
-   （参照「同一概念出现第二次才抽」）。
+1. **配置三层**：套件/工具自带默认值（代码）→ 管理员永久默认（模块私有表 + 管理后台配置页）→
+   任务级覆盖（用户每次使用时调整，随任务入库，优先级最高）。三层按此顺序合并，高层覆盖低层。
+   参考实现：`llmadmit` 的 `tool_llmadmit_casecfg` + 后台「准入配置」页 + 表单「用例自定义」。
 2. **暴露方式**：模块通过 `GET` 接口返回配置 schema（本工具的用例列表/级别/说明即 schema），
    前端按 schema 渲染表单，不硬编码配置项。
 3. **合法性**：模块在创建时校验覆盖项（键存在、取值在枚举内），非法直接 400，不静默忽略。

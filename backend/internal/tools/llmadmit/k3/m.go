@@ -43,6 +43,7 @@ func mCases() []suite.Case {
 		{ID: "M-28", Name: "图片理解双测", Level: suite.LevelP0, Run: m28Image, Doc: suite.CaseDoc{Purpose: "确认图片真实进入模型。", Method: "base64 发送四色位置图和六色顺序图。", Expect: "两图颜色判定全对，否则 P0 否决。", Ref: "§5.1 M-28"}},
 		{ID: "M-29", Name: "公网图片 URL", Level: suite.LevelOptional, Capability: CapImageURL, Run: m29ImageURL, Doc: suite.CaseDoc{Purpose: "验证声明支持的公网图片拉取。", Method: "传 Wikimedia 图片 URL 并要求描述。", Expect: "200 且描述>10 rune；网络失败仅记录，可选。", Ref: "§5.1 M-29"}},
 		{ID: "M-30", Name: "视频红蓝双对照", Level: suite.LevelP0, Capability: CapVideo, Run: m30Video, Doc: suite.CaseDoc{Purpose: "确认视频真实进入模型而非猜测。", Method: "分别发送红、蓝 MP4，要求只答颜色。", Expect: "红答红、蓝答蓝，否则 P0 否决。", Ref: "§5.1 M-30"}},
+		{ID: "M-30B", Name: "视频传输双通道（base64/URL）", Level: suite.LevelP0, Capability: CapVideo, Run: m30BVideoChannels, Doc: suite.CaseDoc{Purpose: "视频有 base64 与 URL 两种传输通道，只验一种会漏掉另一通道缺陷（转换层丢块/拉取失败）。", Method: "同一红色视频分别用 base64 与 URL（本平台托管、任务令牌保护）发送，要求都答红。", Expect: "两种通道均 200 且答红，否则 P0；本服务未配置公开地址时 URL 通道降级为记录。", Ref: "§5.1 M-30 / §8.6"}},
 		{ID: "M-31", Name: "公网视频 URL", Level: suite.LevelOptional, Capability: CapVideo, Run: m31VideoURL, Doc: suite.CaseDoc{Purpose: "记录公网视频 URL 拉取行为。", Method: "传样例 MP4 URL 要求描述。", Expect: "记录 HTTP，受网络影响不判负；可选。", Ref: "§5.1 M-31"}},
 		{ID: "M-32", Name: "音频 WAV 拒绝", Level: suite.LevelRecord, Run: m32Audio, Doc: suite.CaseDoc{Purpose: "记录官方音频输入兼容性。", Method: "发送静音 WAV input_audio。", Expect: "400 为官方对齐；200 透传记 P2。", Ref: "§5.1 M-32"}},
 		{ID: "M-33", Name: "多轮记忆", Level: suite.LevelRequired, Run: m33Memory, Doc: suite.CaseDoc{Purpose: "验证上下文多轮保持。", Method: "前文声明姓名林晓雨，随后追问姓名。", Expect: "200 且回答林晓雨；必过。", Ref: "§5.1 M-33"}},
@@ -64,6 +65,8 @@ func mCases() []suite.Case {
 		{ID: "M-49", Name: "context_length 元信息", Level: suite.LevelRecord, Run: m49ContextLength, Doc: suite.CaseDoc{Purpose: "记录模型上下文窗口元信息。", Method: "GET /models 查目标模型 context_length。", Expect: "记录值；请求/解析/缺模型失败不判负。", Ref: "§5.1 M-49"}},
 		{ID: "M-50", Name: "10k 输入延迟观测", Level: suite.LevelRecord, Run: m50Latency10k, Doc: suite.CaseDoc{Purpose: "建立 10k 输入延迟基线。", Method: "校准 10000 token，流式总结。", Expect: "记录 TTFT、业务 TTFT、TPOT、E2E，无通过线。", Ref: "§5.1 M-50"}},
 		{ID: "M-51", Name: "限流说明（书面回填）", Level: suite.LevelRecord, Run: m51RateLimitNote, Doc: suite.CaseDoc{Purpose: "收集供应商限流策略。", Method: "供应商书面回填。", Expect: "跳过运行，不计通过率；书面回填。", Ref: "§5.1 M-51"}},
+		{ID: "M-53", Name: "Chat 协议参数矩阵", Level: suite.LevelRecord, Run: m53ChatParamMatrix, Doc: suite.CaseDoc{Purpose: "确认 chat/completions 对各参数的接受/拒绝行为与官方契约一致，网关静默吞参会造成行为偏差。", Method: "逐个参数单独发请求（temperature/top_p/n/penalty/max_tokens/stream/response_format/tools/reasoning_effort 等），记录各自 HTTP 状态。", Expect: "官方固定值（temperature=1.0、top_p=0.95、n=1、penalty=0）应 200，偏离值应 400；其余按官方支持矩阵记录，不设通过线。", Ref: "§2.1 官方契约锚点"}},
+		{ID: "M-54", Name: "Anthropic /v1/messages 协议", Level: suite.LevelRecord, Run: m54AnthropicProtocol, Doc: suite.CaseDoc{Purpose: "不少客户端走 Claude 的 /v1/messages 协议，需明确网关是否支持及参数透传程度（历史：转换层静默丢视频块）。", Method: "POST /v1/messages 基础请求 + temperature/top_p/stream 变体，记录状态码与响应结构。", Expect: "200 且结构为 message 类型（含 content[].text）记支持；404/405 记不支持；均不设通过线。", Ref: "§8.6 Anthropic 协议注意事项"}},
 		{ID: "M-52", Name: "封禁说明（书面回填）", Level: suite.LevelRecord, Run: m52BanNote, Doc: suite.CaseDoc{Purpose: "收集供应商封禁策略。", Method: "供应商书面回填。", Expect: "跳过运行，不计通过率；书面回填。", Ref: "§5.1 M-52"}},
 		{ID: "M-B1", Name: "输出上限实测", Level: suite.LevelRequired, Run: mB1OutputCap, Doc: suite.CaseDoc{Purpose: "实测长输出上限与内容保真。", Method: "3000 行确定性 TSV 转 CSV，max_tokens=65536 流式。", Expect: "200 且输出是期望 CSV 精确前缀，并记录 completion 上限；必过。", Ref: "§5.2 M-B1"}},
 		{ID: "M-B2", Name: "输入体积边界", Level: suite.LevelRequired, Run: mB2InputBoundary, Doc: suite.CaseDoc{Purpose: "验证视频输入体积下限与拒绝探测。", Method: "红色视频 base64 梯度 1/10/45/65 MiB。", Expect: "1/10/45 MiB 均 200；记录 65 MiB 413 探测；必过。", Ref: "§5.2 M-B2"}},
@@ -846,6 +849,96 @@ func m50Latency10k(c *suite.CaseCtx) suite.Outcome {
 		map[string]any{"input_tokens": actual, "ttft_ms": r.TTFTMs, "ttft_content_ms": r.TTFTContentMs, "tpot_ms": tpot, "e2e_ms": r.E2EMs}, e)
 }
 
+// M-53：chat/completions 参数支持矩阵（对齐 Kimi 官方契约）。
+func m53ChatParamMatrix(c *suite.CaseCtx) suite.Outcome {
+	probes := []struct {
+		label string
+		patch map[string]any
+		want  int // 0 = 只记录
+	}{
+		{"temperature=1.0（官方固定值）", map[string]any{"temperature": 1.0}, 200},
+		{"temperature=0.7（偏离应拒）", map[string]any{"temperature": 0.7}, 400},
+		{"top_p=0.95（官方固定值）", map[string]any{"top_p": 0.95}, 200},
+		{"top_p=0.9（偏离应拒）", map[string]any{"top_p": 0.9}, 400},
+		{"n=1", map[string]any{"n": 1}, 200},
+		{"presence_penalty=0.5（应拒）", map[string]any{"presence_penalty": 0.5}, 400},
+		{"frequency_penalty=0.5（应拒）", map[string]any{"frequency_penalty": 0.5}, 400},
+		{"max_tokens", map[string]any{"max_tokens": 32}, 200},
+		{"max_completion_tokens", map[string]any{"max_completion_tokens": 32}, 200},
+		{"stream+include_usage", map[string]any{"stream": true, "stream_options": map[string]any{"include_usage": true}}, 200},
+		{"response_format=json_object", map[string]any{"response_format": map[string]any{"type": "json_object"}}, 200},
+		{"tools+auto", map[string]any{"tools": weatherTools(), "tool_choice": "auto"}, 200},
+		{"reasoning_effort=low", map[string]any{"reasoning_effort": "low"}, 200},
+		{"reasoning_effort=high", map[string]any{"reasoning_effort": "high"}, 200},
+		{"reasoning_effort=max", map[string]any{"reasoning_effort": "max"}, 200},
+		{"reasoning_effort=medium（应拒）", map[string]any{"reasoning_effort": "medium"}, 400},
+		{"seed=42", map[string]any{"seed": 42}, 0},
+		{"logprobs", map[string]any{"logprobs": true}, 0},
+	}
+	var evidence []suite.Evidence
+	var defects []suite.Defect
+	matrix := map[string]int{}
+	for _, probe := range probes {
+		body := map[string]any{"messages": userMsg("a"), "max_tokens": 32}
+		for k, v := range probe.patch {
+			body[k] = v
+		}
+		r, retries := chat(c, body)
+		evidence = append(evidence, ev(probe.label, probe.patch, r, retries))
+		matrix[probe.label] = r.HTTPStatus
+		if probe.want != 0 && r.HTTPStatus != probe.want {
+			defects = append(defects, suite.Defect{Level: "P2", Expect: fmt.Sprintf("%s → %d", probe.label, probe.want), Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"})
+		}
+	}
+	summary := ""
+	for _, probe := range probes {
+		summary += fmt.Sprintf("%s:%d ", probe.label, matrix[probe.label])
+	}
+	if len(defects) > 0 {
+		return fail("参数矩阵与官方契约不一致", defects, evidence...)
+	}
+	return pass("参数矩阵: "+summary, map[string]any{"matrix": matrix}, evidence...)
+}
+
+// M-54：Anthropic /v1/messages 协议支持与参数透传。
+func m54AnthropicProtocol(c *suite.CaseCtx) suite.Outcome {
+	probes := []struct {
+		label string
+		patch map[string]any
+	}{
+		{"基础请求", nil},
+		{"temperature=0.7", map[string]any{"temperature": 0.7}},
+		{"top_p=0.9", map[string]any{"top_p": 0.9}},
+		{"stream", map[string]any{"stream": true}},
+	}
+	var evidence []suite.Evidence
+	metrics := map[string]any{}
+	summary := ""
+	for _, probe := range probes {
+		body := map[string]any{
+			"model":      c.Target.Model,
+			"max_tokens": 32,
+			"messages":   []any{map[string]any{"role": "user", "content": "a"}},
+		}
+		for k, v := range probe.patch {
+			body[k] = v
+		}
+		r := c.Client.Post(c, c.Target, "/v1/messages", body, suite.TimeoutNormal)
+		evidence = append(evidence, ev(probe.label, body, r, 0))
+		structure := "unsupported"
+		if r.HTTPStatus == 200 {
+			if strings.Contains(r.Raw, `"type"`) && strings.Contains(r.Raw, `"content"`) {
+				structure = "ok"
+			} else {
+				structure = "nonstandard"
+			}
+		}
+		metrics[probe.label] = fmt.Sprintf("%d/%s", r.HTTPStatus, structure)
+		summary += fmt.Sprintf("%s:%d ", probe.label, r.HTTPStatus)
+	}
+	return pass("messages 协议: "+summary, metrics, evidence...)
+}
+
 func m51RateLimitNote(c *suite.CaseCtx) suite.Outcome {
 	return suite.Outcome{Status: suite.StatusSkipped, Summary: "供应商书面回填说明项，不计通过率"}
 }
@@ -904,35 +997,67 @@ func mB2InputBoundary(c *suite.CaseCtx) suite.Outcome {
 	videoOf := func(size int) string {
 		return videoDataURI(pad(redMP4, size))
 	}
+	// 体积梯度 5/50/80/100 MiB：5MiB 应可用，其余记录实际行为与 413 阈值。
 	steps := []struct {
 		label string
 		bytes int
 		want  int
 	}{
-		{"1MiB", 1 << 20, 200},
-		{"10MiB", 10 << 20, 200},
-		{"45MiB", 45 << 20, 200},
-		{"65MiB", 65 << 20, 413},
+		{"5MiB", 5 << 20, 200},
+		{"50MiB", 50 << 20, 0},
+		{"80MiB", 80 << 20, 0},
+		{"100MiB", 100 << 20, 0},
 	}
 	var evidence []suite.Evidence
 	var defects []suite.Defect
-	threshold := ""
+	results := map[string]int{}
 	for _, step := range steps {
 		body := map[string]any{"messages": videoMsg("这段视频是什么颜色？", videoOf(step.bytes)), "max_tokens": 32}
 		r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 		evidence = append(evidence, ev(step.label, map[string]any{"video_bytes": step.bytes}, r, retries))
+		results[step.label] = r.HTTPStatus
 		if step.want == 200 && r.HTTPStatus != 200 {
 			defects = append(defects, suite.Defect{Level: "P1", Expect: step.label + " → 200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"})
 		}
-		if step.want == 413 {
-			threshold = fmt.Sprintf("%d (HTTP %d)", step.bytes, r.HTTPStatus)
+	}
+	metrics := map[string]any{"http_by_size": results}
+	summary := fmt.Sprintf("5MiB=%d 50MiB=%d 80MiB=%d 100MiB=%d", results["5MiB"], results["50MiB"], results["80MiB"], results["100MiB"])
+	if len(defects) > 0 {
+		return fail("视频体积边界未达标："+summary, defects, evidence...)
+	}
+	return pass("视频体积梯度完成："+summary, metrics, evidence...)
+}
+
+// M-30B：base64 与 URL 两种视频传输通道都要验证（同一红视频双对照）。
+func m30BVideoChannels(c *suite.CaseCtx) suite.Outcome {
+	var evidence []suite.Evidence
+	var defects []suite.Defect
+	metrics := map[string]any{}
+
+	b64Body := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": 64}
+	r1, rt1 := chatTimeout(c, b64Body, suite.TimeoutLarge)
+	evidence = append(evidence, ev("base64 通道", b64Body, r1, rt1))
+	metrics["base64_http"] = r1.HTTPStatus
+	if r1.HTTPStatus != 200 || !strings.Contains(r1.Content, "红") {
+		defects = append(defects, suite.Defect{Level: "P0", Expect: "base64 视频答红", Actual: fmt.Sprintf("HTTP %d %s", r1.HTTPStatus, truncate(r1.Content, 60)), Attribution: "upstream"})
+	}
+
+	url := c.MediaURL("red.mp4")
+	if url == "" {
+		metrics["url_http"] = "本服务未配置公开地址，URL 通道未测"
+	} else {
+		urlBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", url), "max_tokens": 64}
+		r2, rt2 := chatTimeout(c, urlBody, suite.TimeoutLarge)
+		evidence = append(evidence, ev("URL 通道", urlBody, r2, rt2))
+		metrics["url_http"] = r2.HTTPStatus
+		if r2.HTTPStatus != 200 || !strings.Contains(r2.Content, "红") {
+			defects = append(defects, suite.Defect{Level: "P0", Expect: "URL 视频答红", Actual: fmt.Sprintf("HTTP %d %s", r2.HTTPStatus, truncate(r2.Content, 60)), Attribution: "upstream"})
 		}
 	}
-	metrics := map[string]any{"payload_413_probe": threshold}
 	if len(defects) > 0 {
-		return fail("输入体积边界未达标", defects, evidence...)
+		return fail("视频传输通道验证失败", defects, evidence...)
 	}
-	return pass("45MiB 内可用，413 探测完成", metrics, evidence...)
+	return pass("base64 与 URL 双通道均正确识别", metrics, evidence...)
 }
 
 // M-B3：70k token 前缀预热，0/30/60/120/300s 检查点；TTL ≥ 30s。

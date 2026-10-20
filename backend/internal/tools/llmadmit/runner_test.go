@@ -155,7 +155,7 @@ func setupRunner(t *testing.T) (*Runner, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewRunner(st.DB, service.New(st), Suites()), st
+	return NewRunner(st.DB, service.New(st), Suites(), ""), st
 }
 
 func waitStatus(t *testing.T, r *Runner, runID string, deadline time.Duration, want ...string) Run {
@@ -187,7 +187,7 @@ func TestRunnerFTierPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed, runAborted)
-	if final.Verdict != "通过" {
+	if final.Verdict != "0 项未通过" {
 		var rows []CaseResult
 		st.DB.Where("run_id = ?", run.ID).Order("seq ASC").Find(&rows)
 		for _, row := range rows {
@@ -243,7 +243,7 @@ func TestRunnerPauseResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
-	if final.Verdict != "通过" {
+	if final.Verdict != "0 项未通过" {
 		t.Fatalf("verdict=%s want 通过", final.Verdict)
 	}
 	if final.DoneCases != final.TotalCases {
@@ -269,8 +269,8 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
-	if final.Verdict != "不通过" {
-		t.Fatalf("verdict=%s want 不通过", final.Verdict)
+	if !strings.Contains(final.Verdict, "未通过") || strings.HasPrefix(final.Verdict, "0 项") {
+		t.Fatalf("verdict=%s want 非零未通过", final.Verdict)
 	}
 	// 失败不提前终止：所有用例都有终态。
 	if final.DoneCases != final.TotalCases {
@@ -281,8 +281,8 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 	if pending > 0 {
 		t.Fatalf("%d 个用例未执行", pending)
 	}
-	// 每档判定落库。
-	if !strings.Contains(final.TierResults, `"F":"failed"`) {
+	// 每档判定落库（按级别计数）。
+	if !strings.Contains(final.TierResults, `"F":"`) || !strings.Contains(final.TierResults, "未通过") {
 		t.Fatalf("tier_results=%s", final.TierResults)
 	}
 }
@@ -321,7 +321,7 @@ func TestRunnerCaseOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
-	if final.Verdict != "通过" {
+	if final.Verdict != "0 项未通过" {
 		t.Fatalf("verdict=%s want 通过", final.Verdict)
 	}
 	status := map[string]string{}

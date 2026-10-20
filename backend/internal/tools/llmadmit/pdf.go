@@ -150,6 +150,8 @@ func (w *pdfWriter) newPage() {
 func (w *pdfWriter) gap(h float64) { w.y += h }
 
 // text 按可用宽度折行写一段文字；超页自动翻页。
+// 宽度用估算（CJK≈1em、ASCII≈0.5em），避免逐字 MeasureTextWidth 的 O(n²) 开销——
+// 大报告下这是导出慢的主因。
 func (w *pdfWriter) text(s string, size, leading float64) {
 	if w.err != nil {
 		return
@@ -158,20 +160,25 @@ func (w *pdfWriter) text(s string, size, leading float64) {
 		w.err = err
 		return
 	}
-	usable := pdfWidth - 2*pdfMargin
+	usableUnits := (pdfWidth - 2*pdfMargin) / size
+	units := 0.0
 	line := ""
 	for _, r := range s {
 		if r == '\n' {
 			w.writeLine(line, leading)
-			line = ""
+			line, units = "", 0
 			continue
 		}
-		trial := line + string(r)
-		if width, err := w.pdf.MeasureTextWidth(trial); err == nil && width > usable && line != "" {
+		w_ := 0.55
+		if r > 0x2E7F {
+			w_ = 1.0
+		}
+		if units+w_ > usableUnits && line != "" {
 			w.writeLine(line, leading)
-			line = string(r)
+			line, units = string(r), w_
 		} else {
-			line = trial
+			line += string(r)
+			units += w_
 		}
 	}
 	if line != "" {

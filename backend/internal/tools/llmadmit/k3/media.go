@@ -17,6 +17,10 @@ var redMP4 []byte
 //go:embed media/blue.mp4
 var blueMP4 []byte
 
+// RedMP4/BlueMP4 供模块的媒体托管端点使用（任务令牌保护）。
+func RedMP4() []byte  { return redMP4 }
+func BlueMP4() []byte { return blueMP4 }
+
 func videoDataURI(data []byte) string {
 	return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(data)
 }

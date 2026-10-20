@@ -112,11 +112,14 @@ func (a *API) Run() *gin.Engine {
 	write.PUT("/tools/:id", a.savePolicy)
 	write.PUT("/tools/:id/meta", a.saveToolMeta)
 	write.POST("/tools/:id/reset", a.resetToolMeta)
-	// 工具后端模块：read 带「可见且可用」策略判定，write 再加 CSRF 校验。
+	// 工具后端模块：read 带「可见且可用」策略判定，write 再加 CSRF 校验；
+	// pub 免鉴权（模块须自行用 token 保护，供外部系统拉取）。
 	for _, m := range a.modules {
-		read := r.Group("/api/tools/"+m.ID(), a.requireToolUse(m.ID()))
+		base := "/api/tools/" + m.ID()
+		read := r.Group(base, a.requireToolUse(m.ID()))
 		write := read.Group("", a.csrf)
-		m.Register(read, write, a.deps)
+		pub := r.Group(base + "/pub")
+		m.Register(read, write, pub, a.deps)
 	}
 	r.NoRoute(a.static)
 	return r

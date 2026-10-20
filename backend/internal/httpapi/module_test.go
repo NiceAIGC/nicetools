@@ -26,7 +26,7 @@ func (futureModule) ID() string { return "future-tool" }
 func (futureModule) Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(&futureRow{})
 }
-func (futureModule) Register(read, write *gin.RouterGroup, d module.Deps) {
+func (futureModule) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	read.GET("/rows", func(c *gin.Context) {
 		var count int64
 		if err := d.DB.Model(&futureRow{}).Count(&count).Error; err != nil {
@@ -116,9 +116,9 @@ func TestModuleValidation(t *testing.T) {
 
 type badModule struct{ id string }
 
-func (m badModule) ID() string                                           { return m.id }
-func (m badModule) Migrate(db *gorm.DB) error                            { return nil }
-func (m badModule) Register(read, write *gin.RouterGroup, d module.Deps) {}
+func (m badModule) ID() string                                                { return m.id }
+func (m badModule) Migrate(db *gorm.DB) error                                 { return nil }
+func (m badModule) Register(read, write, pub *gin.RouterGroup, d module.Deps) {}
 
 // 真实模块（llm-admission）：默认不可见 → 404；开放游客后 suites 可访问。
 func TestLlmAdmissionModulePolicy(t *testing.T) {

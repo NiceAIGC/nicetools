@@ -292,6 +292,35 @@ func contentText(raw json.RawMessage) string {
 	return ""
 }
 
+// Post 调用任意路径的 JSON POST（如 Anthropic /v1/messages），非流式读回。
+func (c *Client) Post(ctx context.Context, t Target, path string, body map[string]any, timeout time.Duration) CallResult {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return CallResult{ErrKind: "client", ErrMsg: err.Error()}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, strings.TrimSuffix(t.BaseURL, "/")+path, bytes.NewReader(payload))
+	if err != nil {
+		return CallResult{ErrKind: "client", ErrMsg: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if t.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+t.APIKey)
+		req.Header.Set("x-api-key", t.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	start := time.Now()
+	res, err := c.http.Do(req)
+	if err != nil {
+		return CallResult{ErrKind: "transport", ErrMsg: err.Error(), E2EMs: ms(start)}
+	}
+	defer res.Body.Close()
+	r := CallResult{HTTPStatus: res.StatusCode, RequestID: res.Header.Get("X-Request-Id")}
+	c.readJSON(res.Body, &r, start)
+	return r
+}
+
 // Models 校验 /v1/models 中目标模型在列（前置闸门 G1）。
 func (c *Client) Models(ctx context.Context, t Target) (int, []string, error) {
 	status, body, err := c.Get(ctx, t, "/models")
