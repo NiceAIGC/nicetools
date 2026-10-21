@@ -14,6 +14,7 @@ import {
   TableColumn,
   TableHeader,
   TableRow,
+  Switch,
 } from "@heroui/react";
 
 import { json, toolApi } from "../../api/client";
@@ -115,7 +116,7 @@ export default function AdmissionConfig() {
                 <TableColumn>用例</TableColumn>
                 <TableColumn>说明</TableColumn>
                 <TableColumn className="w-36">级别</TableColumn>
-                <TableColumn className="w-32">默认执行</TableColumn>
+                <TableColumn className="w-44">启用 / 豁免</TableColumn>
               </TableHeader>
               <TableBody>
                 {tier.cases.map((cs) => {
@@ -147,16 +148,26 @@ export default function AdmissionConfig() {
                         </Select>
                       </TableCell>
                       <TableCell>
-                        <Select
-                          aria-label={`${cs.name} 默认执行`}
-                          size="sm"
-                          selectedKeys={[current.mode || "default"]}
-                          onChange={(e) => update(cs.id, { mode: e.target.value === "default" ? "" : (e.target.value as CaseCfg["mode"]) })}
-                        >
-                          <SelectItem key="default">默认</SelectItem>
-                          <SelectItem key="skip">不测</SelectItem>
-                          <SelectItem key="exempt">豁免</SelectItem>
-                        </Select>
+                        {/* 关闭即永久不测（mode=skip）；豁免只在启用时有意义 */}
+                        <div className="flex items-center gap-4">
+                          <Switch
+                            aria-label={`${cs.name} 启用`}
+                            size="sm"
+                            isSelected={current.mode !== "skip"}
+                            onValueChange={(on) => update(cs.id, { mode: on ? (current.mode === "skip" ? "" : current.mode) : "skip" })}
+                          >
+                            启用
+                          </Switch>
+                          <Switch
+                            aria-label={`${cs.name} 豁免`}
+                            size="sm"
+                            isDisabled={current.mode === "skip"}
+                            isSelected={current.mode === "exempt"}
+                            onValueChange={(on) => update(cs.id, { mode: on ? "exempt" : "" })}
+                          >
+                            豁免
+                          </Switch>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
