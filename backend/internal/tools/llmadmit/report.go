@@ -337,10 +337,14 @@ func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult,
 // tierRank 档位排序；兼容历史库中的 F/B/M/S 旧档位。
 func tierRank(tier string) int {
 	switch tier {
-	case "准入", "F", "B", "M":
+	case "准入", "F":
 		return 0
-	default: // 压测 / S / 未知
+	case "B":
 		return 1
+	case "M":
+		return 2
+	default: // 压测 / S / 未知
+		return 3
 	}
 }
 
