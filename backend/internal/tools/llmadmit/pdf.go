@@ -67,7 +67,8 @@ func (w *pdfWriter) textWidth(s string, size float64) float64 {
 	return total * size / 100
 }
 
-// wrapUnits 按精确宽度折行（ usable 以 size 字号计）。
+// wrapUnits 按精确宽度折行（usable 以 size 字号计）。
+// 断行规则：新行不得以收尾标点开头（。，、；：！？）》」』）— 标点后移不产生孤行。
 func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
 	lines := []string{}
 	line := ""
@@ -78,6 +79,11 @@ func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
 			continue
 		}
 		if w.textWidth(line+string(r), 100) > usable*100 && line != "" {
+			if strings.ContainsRune("。，、；：！？）》」』）％‰…", r) {
+				// 标点跟上一行走，宁可轻微越界也不孤行。
+				line += string(r)
+				continue
+			}
 			lines = append(lines, line)
 			line = string(r)
 		} else {
@@ -173,15 +179,17 @@ func renderPDF(rep report) ([]byte, error) {
 		}
 		w.text("未通过级别分布："+strings.Join(parts, "、"), 9, 13)
 	}
+	// 图表紧随摘要放在上方（TTFT/缓存等性能数据），参数类缺陷放下方。
+	w.renderCharts(rep.Cases)
 	tierRows := [][]string{}
 	for _, t := range s.Tiers {
 		tierRows = append(tierRows, []string{t.Tier, fmt.Sprint(t.Total), fmt.Sprint(t.Passed), fmt.Sprint(t.Failed), fmt.Sprint(t.Exempt), fmt.Sprint(t.Skipped)})
 	}
 	w.table([]string{"档位", "用例数", "通过", "失败", "豁免", "跳过"}, tierRows, []float64{60, 85, 85, 85, 85, 85})
-	w.renderCharts(rep.Cases)
 
 	if len(rep.Defects) > 0 {
 		w.gap(8)
+		w.ensure(34) // 缺陷清单标题至少带一行表头，不留在页底
 		w.text("缺陷清单", 13, 20)
 		rows := [][]string{}
 		for _, d := range rep.Defects {
@@ -192,12 +200,14 @@ func renderPDF(rep report) ([]byte, error) {
 
 	// 用例详情
 	w.gap(8)
+	w.ensure(50)
 	w.text("用例详情", 13, 20)
 	currentTier := ""
 	for _, c := range rep.Cases {
 		if c.Tier != currentTier {
 			currentTier = c.Tier
 			w.gap(6)
+			w.ensure(90) // 档位标题与首个用例卡片同页
 			w.text(currentTier+" 档", 12, 18)
 		}
 		w.renderCase(c, rep.Masked)
@@ -221,27 +231,26 @@ func (w *pdfWriter) kvRow(label, value string) {
 	w.y += 14
 }
 
-// table 渲染带表头底色与边框的表格（单元格按宽折行，行高自适应）。
+// table 渲染带表头底色与边框的表格（单元格按宽折行，行高自适应，跨页先重表头再接行）。
 func (w *pdfWriter) table(headers []string, rows [][]string, widths []float64) {
 	if w.err != nil {
 		return
 	}
 	const lineH = 11.0
 	widths = fitWidths(widths)
-	drawRow := func(cells []string, fill bool) {
-		// 计算行高：最高的单元格行数
+	heightOf := func(cells []string) float64 {
 		maxLines := 1
-		wrapped := make([][]string, len(cells))
 		for i, cell := range cells {
-			wrapped[i] = w.wrapUnits(cell, (widths[i]-8)/8.5)
-			if len(wrapped[i]) > maxLines {
-				maxLines = len(wrapped[i])
+			if n := len(w.wrapUnits(cell, (widths[i]-8)/8.5)); n > maxLines {
+				maxLines = n
 			}
 		}
-		rowH := float64(maxLines)*lineH + 5
-		w.ensure(rowH)
+		return float64(maxLines)*lineH + 5
+	}
+	drawRow := func(cells []string, fill bool) {
+		rowH := heightOf(cells)
 		x := pdfMargin
-		for i, lines := range wrapped {
+		for i, cell := range cells {
 			if fill {
 				w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
 				w.pdf.Rectangle(x, w.y, x+widths[i], w.y+rowH, "F", 0, 0)
@@ -250,7 +259,7 @@ func (w *pdfWriter) table(headers []string, rows [][]string, widths []float64) {
 			w.pdf.Rectangle(x, w.y, x+widths[i], w.y+rowH, "D", 0, 0)
 			_ = w.pdf.SetFont("wqy", "", 8.5)
 			w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-			for j, line := range lines {
+			for j, line := range w.wrapUnits(cell, (widths[i]-8)/8.5) {
 				w.pdf.SetXY(x+4, w.y+3+float64(j)*lineH)
 				_ = w.pdf.Text(line)
 			}
@@ -258,8 +267,14 @@ func (w *pdfWriter) table(headers []string, rows [][]string, widths []float64) {
 		}
 		w.y += rowH
 	}
+	w.ensure(heightOf(headers))
 	drawRow(headers, true)
 	for _, row := range rows {
+		rowH := heightOf(row)
+		if w.y+rowH > pdfHeight-pdfMargin-20 {
+			w.newPage()
+			drawRow(headers, true) // 跨页先重表头
+		}
 		drawRow(row, false)
 	}
 	w.y += 4
@@ -391,7 +406,7 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 		return
 	}
 	const barH = 18.0
-	w.ensure(barH + 60)
+	w.ensure(barH + 66) // 标题条与正文开头同页，不留孤条在页底
 	// 标题条
 	w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
 	w.pdf.Rectangle(pdfMargin, w.y, pdfWidth-pdfMargin, w.y+barH, "F", 0, 0)
