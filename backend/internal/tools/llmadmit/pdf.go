@@ -67,6 +67,21 @@ func (w *pdfWriter) textWidth(s string, size float64) float64 {
 	return total * size / 100
 }
 
+// inFont 判断字符是否在内嵌字体子集内（与 fonts/ 子集化范围一致）；
+// 不在的字符统一替换为 ?，杜绝缺字豆腐块（emoji/罕见符号）。
+func inFont(r rune) bool {
+	switch {
+	case r >= 0x20 && r <= 0x7E, r >= 0xA0 && r <= 0xFF,
+		r >= 0x2000 && r <= 0x206F, r >= 0x20A0 && r <= 0x20BF,
+		r >= 0x2100 && r <= 0x214F, r >= 0x2190 && r <= 0x22FF,
+		r >= 0x2300 && r <= 0x23FF, r >= 0x2460 && r <= 0x26FF,
+		r >= 0x3000 && r <= 0x303F, r >= 0xFF00 && r <= 0xFFEF,
+		r >= 0x4E00 && r <= 0x9FA5:
+		return true
+	}
+	return false
+}
+
 // wrapUnits 按精确宽度折行（usable 以 size 字号计）。
 // 断行规则：新行不得以收尾标点开头（。，、；：！？）》」』）— 标点后移不产生孤行。
 func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
@@ -77,6 +92,9 @@ func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
 			lines = append(lines, line)
 			line = ""
 			continue
+		}
+		if !inFont(r) {
+			r = '?'
 		}
 		if w.textWidth(line+string(r), 100) > usable*100 && line != "" {
 			if strings.ContainsRune("。，、；：！？）》」』）％‰…", r) {
@@ -100,6 +118,9 @@ func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
 func (w *pdfWriter) clipUnits(s string, usable float64) string {
 	line := ""
 	for _, r := range s {
+		if !inFont(r) {
+			r = '?'
+		}
 		if w.textWidth(line+string(r)+"…", 100) > usable*100 {
 			return line + "…"
 		}
@@ -108,11 +129,16 @@ func (w *pdfWriter) clipUnits(s string, usable float64) string {
 	return s
 }
 
-// clip 按字符数截断（kv 网格用）。
+// clip 按字符数截断（kv 网格用），同时剔除字体缺失字符。
 func clip(s string, max int) string {
 	runes := []rune(s)
+	for i, r := range runes {
+		if !inFont(r) {
+			runes[i] = '?'
+		}
+	}
 	if len(runes) <= max {
-		return s
+		return string(runes)
 	}
 	return string(runes[:max-1]) + "…"
 }
