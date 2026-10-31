@@ -112,9 +112,9 @@ func renderPDF(rep report) ([]byte, error) {
 		w.text("缺陷清单", 13, 20)
 		rows := [][]string{}
 		for _, d := range rep.Defects {
-			rows = append(rows, []string{d.Level, d.CaseID, d.Expect, d.Actual, d.Attribution})
+			rows = append(rows, []string{d.Level, d.CaseID, d.Expect, d.Actual})
 		}
-		w.table([]string{"级别", "用例", "期望", "实测", "归因"}, rows, []float64{36, 60, 140, 190, 89})
+		w.table([]string{"级别", "用例", "期望", "实测"}, rows, []float64{40, 64, 190, 221})
 	}
 
 	// 用例详情
@@ -244,59 +244,68 @@ func (w *pdfWriter) renderCharts(cases []caseRow) {
 		p50, ok1 := m["ttft_p50_ms"].(float64)
 		p90, ok2 := m["ttft_p90_ms"].(float64)
 		if ok1 && ok2 && p50 > 0 {
-			ttfts = append(ttfts, bar{c.Tier + "-" + c.CaseID, p50, p90})
+			ttfts = append(ttfts, bar{chartLabel(c), p50, p90})
 		}
 		if rate, ok := m["cache_hit_rate_percent"].(float64); ok {
-			caches = append(caches, cacheBar{c.Tier + "-" + c.CaseID, rate})
+			caches = append(caches, cacheBar{chartLabel(c), rate})
 		}
 	}
 	if len(ttfts) < 2 && len(caches) < 2 {
 		return
 	}
 	const (
-		barH   = 8.0
-		labelW = 88.0
-		valueW = 64.0
+		barH   = 9.0
+		labelW = 84.0
+		valueW = 76.0
 	)
 	maxW := pdfWidth - 2*pdfMargin - labelW - valueW
-	drawBar := func(label string, frac1, frac2 float64, text string) {
-		w.ensure(barH + 5)
-		_ = w.pdf.SetFont("wqy", "", 7.5)
-		w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
-		w.pdf.SetXY(pdfMargin, w.y+1)
-		_ = w.pdf.Text(clipUnits(label, labelW/7.5-1))
-		// 底槽
-		w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
-		w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW, w.y+barH, "F", 0, 0)
-		if frac2 > 0 {
-			w.pdf.SetFillColor(0x93, 0xa8, 0xc4)
-			w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW*frac2, w.y+barH, "F", 0, 0)
+	xBar := pdfMargin + labelW
+	maxTTFT := 1.0
+	for _, b := range ttfts {
+		if b.p90 > maxTTFT {
+			maxTTFT = b.p90
 		}
-		w.pdf.SetFillColor(colorTitle[0], colorTitle[1], colorTitle[2])
-		w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW*frac1, w.y+barH, "F", 0, 0)
-		w.pdf.SetXY(pdfMargin+labelW+maxW+4, w.y+1)
-		w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-		_ = w.pdf.Text(text)
-		w.y += barH + 4
 	}
 	if len(ttfts) >= 2 {
 		w.gap(8)
 		w.text("TTFT 对比（深=P50 浅=P90，ms）", 11, 16)
-		max := 1.0
+		w.pdf.SetStrokeColor(colorBorder[0], colorBorder[1], colorBorder[2])
+		w.pdf.Line(xBar, w.y-2, xBar, w.y+float64(len(ttfts))*(barH+5)-6)
+		w.pdf.Line(xBar+maxW, w.y-2, xBar+maxW, w.y+float64(len(ttfts))*(barH+5)-6)
 		for _, b := range ttfts {
-			if b.p90 > max {
-				max = b.p90
-			}
-		}
-		for _, b := range ttfts {
-			drawBar(b.label, b.p50/max, b.p90/max, fmt.Sprintf("%.0f / %.0f", b.p50, b.p90))
+			w.ensure(barH + 5)
+			_ = w.pdf.SetFont("wqy", "", 7.5)
+			w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
+			w.pdf.SetXY(pdfMargin, w.y+2)
+			_ = w.pdf.Text(clipUnits(b.label, labelW/7.5-1))
+			w.pdf.SetFillColor(0xc7, 0xd2, 0xe4)
+			w.pdf.Rectangle(xBar, w.y, xBar+maxW*b.p90/maxTTFT, w.y+barH, "F", 0, 0)
+			w.pdf.SetFillColor(colorTitle[0], colorTitle[1], colorTitle[2])
+			w.pdf.Rectangle(xBar, w.y, xBar+maxW*b.p50/maxTTFT, w.y+barH, "F", 0, 0)
+			w.pdf.SetXY(xBar+maxW+6, w.y+2)
+			w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+			_ = w.pdf.Text(fmt.Sprintf("%.0f / %.0f", b.p50, b.p90))
+			w.y += barH + 5
 		}
 	}
 	if len(caches) >= 2 {
-		w.gap(6)
+		w.gap(8)
 		w.text("缓存命中率（token 口径，%）", 11, 16)
+		w.pdf.SetStrokeColor(colorBorder[0], colorBorder[1], colorBorder[2])
+		w.pdf.Line(xBar, w.y-2, xBar, w.y+float64(len(caches))*(barH+5)-6)
+		w.pdf.Line(xBar+maxW, w.y-2, xBar+maxW, w.y+float64(len(caches))*(barH+5)-6)
 		for _, c := range caches {
-			drawBar(c.label, c.rate/100, 0, fmt.Sprintf("%.1f%%", c.rate))
+			w.ensure(barH + 5)
+			_ = w.pdf.SetFont("wqy", "", 7.5)
+			w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
+			w.pdf.SetXY(pdfMargin, w.y+2)
+			_ = w.pdf.Text(clipUnits(c.label, labelW/7.5-1))
+			w.pdf.SetFillColor(0x2f, 0x7d, 0xb8)
+			w.pdf.Rectangle(xBar, w.y, xBar+maxW*c.rate/100, w.y+barH, "F", 0, 0)
+			w.pdf.SetXY(xBar+maxW+6, w.y+2)
+			w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+			_ = w.pdf.Text(fmt.Sprintf("%.1f%%", c.rate))
+			w.y += barH + 5
 		}
 	}
 }
@@ -367,9 +376,9 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	if json.Unmarshal(c.Defects, &defects) == nil && len(defects) > 0 {
 		rows := [][]string{}
 		for _, d := range defects {
-			rows = append(rows, []string{d.Level, d.Expect, d.Actual, d.Attribution})
+			rows = append(rows, []string{d.Level, d.Expect, d.Actual})
 		}
-		w.table([]string{"级别", "期望", "实测", "归因"}, rows, []float64{36, 150, 240, 89})
+		w.table([]string{"级别", "期望", "实测"}, rows, []float64{40, 230, 245})
 	}
 	// 证据盒（精简/脱敏版无）
 	if !masked {

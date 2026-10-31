@@ -32,10 +32,9 @@ func Suite() suite.Suite {
 			{Key: CapWebSearch, Label: "联网搜索（web_search_options）"},
 		},
 		Tiers: []suite.Tier{
-			{ID: "F", Name: "F 档 · 功能测试", Hint: "~30 请求 / <20k tokens / ~5 分钟", Cases: fCases()},
-			{ID: "B", Name: "B 档 · 基准测试（基本延迟与缓存）", Hint: "~350 请求 / ~10M tokens / ~15 分钟", Cases: bCases()},
-			{ID: "M", Name: "M 档 · 中等测试", Hint: "~120 请求 / 0.5–1M tokens / 30–60 分钟", Cases: mCases()},
-			{ID: "S", Name: "S 档 · 真实压测", Hint: "~400–800 请求 / 10–15M tokens / 1.5–3 小时", Cases: sCases()},
+			// 两档结构：准入测试（功能+边界+基础缓存）→ 压力测试（延迟基准+容量压测）。
+			{ID: "准入", Name: "准入测试", Hint: "功能协议 + 边界 + 基础缓存 / 30–60 分钟", Cases: append(fCases(), append(mCases(), bCacheCases()...)...)},
+			{ID: "压测", Name: "压力测试", Hint: "延迟基准（8 梯度）+ 阶梯压测 / 1.5–3 小时", Cases: append(bLoadCases(), sCases()...)},
 		},
 	}
 }

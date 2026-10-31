@@ -78,10 +78,11 @@ export const listCaseCfg = () => toolApi<CaseCfg[]>(ID, "/config");
 export const saveCaseCfg = (suite: string, cfgs: CaseCfg[]) =>
   toolApi(ID, "/config", json("PUT", { suite, cfgs }));
 
-export function exportUrl(base: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
+export function exportUrl(base: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string, name?: string) {
   const params = new URLSearchParams({ type, format });
   if (detail === "brief") params.set("detail", "brief");
   if (channel) params.set("channel", channel);
+  if (name) params.set("name", name);
   return `${base}?${params}`;
 }
 
@@ -93,10 +94,10 @@ export const pauseRun = (id: string) => toolApi(ID, `/runs/${id}/pause`, json("P
 export const resumeRun = (id: string) => toolApi(ID, `/runs/${id}/resume`, json("POST", {}));
 export const abortRun = (id: string) => toolApi(ID, `/runs/${id}/abort`, json("POST", {}));
 
-export function exportRun(id: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
-  window.open(exportUrl(`/api/tools/${ID}/runs/${id}/export`, type, format, detail, channel), "_blank");
+export function exportRun(id: string, type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string, name?: string) {
+  window.open(exportUrl(`/api/tools/${ID}/runs/${id}/export`, type, format, detail, channel, name), "_blank");
 }
 
-export function exportMerged(ids: string[], type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string) {
-  window.open(exportUrl(`/api/tools/${ID}/export/merged?ids=${ids.join(",")}`, type, format, detail, channel), "_blank");
+export function exportMerged(ids: string[], type: ExportType, format: ExportFormat, detail: ExportDetail, channel?: string, name?: string) {
+  window.open(exportUrl(`/api/tools/${ID}/export/merged?ids=${ids.join(",")}`, type, format, detail, channel, name), "_blank");
 }

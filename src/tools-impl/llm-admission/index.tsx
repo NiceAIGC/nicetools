@@ -119,7 +119,7 @@ function CaseDetail({ row, doc }: { row: CaseRow; doc?: { purpose: string; metho
       {doc?.expect && <p><span className="text-default-400">预期：</span>{doc.expect}{doc.ref ? `（${doc.ref}）` : ""}</p>}
       {row.summary && <p><span className="text-default-400">实测：</span>{row.summary}</p>}
       {defects.map((d, i) => (
-        <p key={i}><span className="text-default-400">缺陷[{d.level}]：</span>期望 {d.expect}；实测 {d.actual}；归因 {d.attribution}</p>
+        <p key={i}><span className="text-default-400">缺陷[{d.level}]：</span>期望 {d.expect}；实测 {d.actual}</p>
       ))}
     </div>
   );
@@ -144,9 +144,11 @@ export default function LlmAdmission() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exportChannel, setExportChannel] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [exDetail, setExDetail] = useState<ExportDetail>("full");
-  const [exType, setExType] = useState<ExportType>("full");
+  // 默认：精简版 + 脱敏。
+  const [exDetail, setExDetail] = useState<ExportDetail>("brief");
+  const [exType, setExType] = useState<ExportType>("masked");
   const [exFormat, setExFormat] = useState<ExportFormat>("pdf");
+  const [exportName, setExportName] = useState("");
 
   const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
   // 目标档位及其前置档位的全部用例（如选 M 则显示 F+M）。
@@ -179,6 +181,7 @@ export default function LlmAdmission() {
         if (list[0]) {
           setSuiteId(list[0].id);
           setModel((m) => m || list[0].default_model);
+          setTier((t) => (list[0].tiers.some((x) => x.id === t) ? t : (list[0].tiers[0]?.id ?? "F")));
           setDeclarations(Object.fromEntries(list[0].capabilities.map((c) => [c.key, false])));
         }
       })
@@ -379,7 +382,8 @@ export default function LlmAdmission() {
                   <SelectItem key="md">MD</SelectItem>
                   <SelectItem key="json">JSON</SelectItem>
                 </Select>
-                <Button size="sm" color="primary" variant="flat" onPress={() => exportRun(detail.run.id, exType, exFormat, exDetail, exportChannel || undefined)}>导出</Button>
+                <Input label="文件名" size="sm" className="w-40" placeholder="默认自动命名" value={exportName} onValueChange={setExportName} />
+                <Button size="sm" color="primary" variant="flat" onPress={() => exportRun(detail.run.id, exType, exFormat, exDetail, exportChannel || undefined, exportName.trim() || undefined)}>导出</Button>
               </div>
             </div>
             <Progress
@@ -443,7 +447,8 @@ export default function LlmAdmission() {
             {selected.size > 0 && (
               <>
                 <span className="text-xs text-default-400">已选 {selected.size} 个任务</span>
-                <Button size="sm" color="primary" variant="flat" onPress={() => exportMerged([...selected], exType, exFormat, exDetail, exportChannel || undefined)}>合并导出</Button>
+                <Input label="文件名" size="sm" className="w-40" placeholder="默认自动命名" value={exportName} onValueChange={setExportName} />
+                <Button size="sm" color="primary" variant="flat" onPress={() => exportMerged([...selected], exType, exFormat, exDetail, exportChannel || undefined, exportName.trim() || undefined)}>合并导出</Button>
               </>
             )}
           </div>

@@ -29,7 +29,8 @@ func bScenarios() []bScenario {
 	}
 }
 
-func bCases() []suite.Case {
+// bLoadCases 返回延迟基准场景（8 个输入梯度）。
+func bLoadCases() []suite.Case {
 	cases := []suite.Case{}
 	for _, sc := range bScenarios() {
 		scenario := sc
@@ -44,23 +45,27 @@ func bCases() []suite.Case {
 			Run: func(c *suite.CaseCtx) suite.Outcome { return bRunScenario(c, scenario) },
 		})
 	}
-	cases = append(cases,
-		suite.Case{ID: "B-C1", Name: "缓存冷热三场景", Level: suite.LevelRequired, Run: mB4CacheScenarios,
+	return cases
+}
+
+// bCacheCases 返回基础缓存用例（进准入测试档）。
+func bCacheCases() []suite.Case {
+	return []suite.Case{
+		{ID: "B-C1", Name: "缓存冷热三场景", Level: suite.LevelRequired, Run: mB4CacheScenarios,
 			Doc: suite.CaseDoc{
 				Purpose: "缓存在 repeat/multiturn/suffix 三种真实使用形态下都要稳定命中，单一场景通过不代表可用。",
 				Method:  "2048 token 公共前缀，各场景 1 预热 + 5 测量，场景间独立 nonce 防串扰。",
 				Expect:  "三场景 token 覆盖率均 ≥80%；suffix 首测不命中记 P2。",
 				Ref:     "§5.2 M-B4",
 			}},
-		suite.Case{ID: "B-C2", Name: "缓存 TTL 快检", Level: suite.LevelRequired, Run: bCacheTTL,
+		{ID: "B-C2", Name: "缓存 TTL 快检", Level: suite.LevelRequired, Run: bCacheTTL,
 			Doc: suite.CaseDoc{
 				Purpose: "缓存存活时间是命中率的前提，过短 TTL 会导致长会话冷启动。",
 				Method:  "70k token 前缀预热，0/30/60/120s 检查点探测 cached_tokens 衰减。",
 				Expect:  "TTL ≥ 30s（≥30s 检查点仍有命中），产出衰减曲线。",
 				Ref:     "§5.2 M-B3（快检版）",
 			}},
-	)
-	return cases
+	}
 }
 
 // bRunScenario 跑一个基准场景：同语料样本（首个自然预热），统计延迟分位与缓存命中。

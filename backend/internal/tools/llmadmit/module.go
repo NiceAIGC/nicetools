@@ -347,12 +347,31 @@ func (m *Module) exportMerged(c *gin.Context) {
 	m.respondReport(c, rep, "llmadmit-merged")
 }
 
+// exportName 清洗自定义导出名：仅保留中英文、数字、.-_，按字符截断。
+func exportName(raw string) string {
+	var b strings.Builder
+	count := 0
+	for _, r := range raw {
+		safe := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r > 0x2E7F
+		if !safe || count >= 64 {
+			continue
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return b.String()
+}
+
 func (m *Module) respondReport(c *gin.Context, rep report, base string) {
 	kind := "full"
 	if rep.Masked {
 		kind = "masked"
 	}
 	filename := base + "-" + kind
+	// 自定义导出名（仅保留安全字符）。
+	if name := exportName(c.Query("name")); name != "" {
+		filename = name
+	}
 	switch c.DefaultQuery("format", "json") {
 	case "json":
 		data, err := json.MarshalIndent(rep, "", "  ")

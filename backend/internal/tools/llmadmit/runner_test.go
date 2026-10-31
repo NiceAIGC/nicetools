@@ -14,7 +14,6 @@ import (
 	"nicetools/backend/internal/config"
 	"nicetools/backend/internal/service"
 	"nicetools/backend/internal/store"
-	"nicetools/backend/internal/tools/llmadmit/k3"
 	"nicetools/backend/internal/tools/llmadmit/suite"
 )
 
@@ -143,6 +142,64 @@ func extractPrompt(messages []map[string]any) (string, bool) {
 	return sb.String(), image
 }
 
+// fixtureSuite 是测试专用小套件：秒级跑完、行为可控（真实 K3 套件的 TTL/压测用例不适合单测）。
+// 用例函数自包含，只用 suite 公共 API。
+func fixtureSuite() suite.Suite {
+	probe := func(c *suite.CaseCtx) suite.Outcome {
+		body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "a"}}, "max_tokens": 32}
+		r, _ := suite.CallWithRetry(c, func() suite.CallResult {
+			return c.Client.Chat(c, c.Target, body, suite.TimeoutNormal)
+		})
+		payload, _ := json.Marshal(body)
+		e := suite.Evidence{Label: "probe", Request: string(payload), Result: r}
+		if r.HTTPStatus == 200 {
+			return suite.Outcome{Status: suite.StatusPassed, Summary: "probe ok", Evidence: []suite.Evidence{e}}
+		}
+		return suite.Outcome{Status: suite.StatusFailed, Summary: "probe fail", Evidence: []suite.Evidence{e}}
+	}
+	identity := func(c *suite.CaseCtx) suite.Outcome {
+		body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "你是谁"}}, "max_tokens": 64}
+		r, _ := suite.CallWithRetry(c, func() suite.CallResult {
+			return c.Client.Chat(c, c.Target, body, suite.TimeoutNormal)
+		})
+		payload, _ := json.Marshal(body)
+		e := suite.Evidence{Label: "身份", Request: string(payload), Result: r}
+		if strings.Contains(r.Content, "Kimi") {
+			return suite.Outcome{Status: suite.StatusPassed, Summary: "身份正确", Evidence: []suite.Evidence{e}}
+		}
+		return suite.Outcome{
+			Status: suite.StatusFailed, Summary: "身份不符",
+			Defects:  []suite.Defect{{Level: "P0", Expect: "Kimi", Actual: r.Content, Attribution: "upstream"}},
+			Evidence: []suite.Evidence{e},
+		}
+	}
+	gate := func(c *suite.CaseCtx) suite.Outcome {
+		status, ids, err := c.Client.Models(c, c.Target)
+		if err != nil || status != 200 {
+			return suite.Outcome{Status: suite.StatusFailed, Summary: fmt.Sprintf("HTTP %d %v", status, err)}
+		}
+		for _, id := range ids {
+			if id == c.Target.Model {
+				return suite.Outcome{Status: suite.StatusPassed, Summary: "模型在列"}
+			}
+		}
+		return suite.Outcome{Status: suite.StatusFailed, Summary: "模型不在列表"}
+	}
+	return suite.Suite{
+		ID: "fixture", Name: "测试套件", DefaultModel: "kimi-k3",
+		Tiers: []suite.Tier{
+			{ID: "一", Name: "准入测试", Cases: []suite.Case{
+				{ID: "G1", Name: "闸门", Level: suite.LevelGate, Run: gate},
+				{ID: "T-01", Name: "身份", Level: suite.LevelP0, Run: identity},
+				{ID: "T-02", Name: "探测", Level: suite.LevelRequired, Run: probe},
+				{ID: "T-08", Name: "记录", Level: suite.LevelRecord, Run: probe},
+				{ID: "T-10", Name: "图像", Level: suite.LevelP0, Run: probe},
+			}},
+			{ID: "二", Name: "压力测试", Cases: []suite.Case{{ID: "L-01", Name: "压测", Level: suite.LevelRequired, Run: probe}}},
+		},
+	}
+}
+
 func setupRunner(t *testing.T) (*Runner, *store.Store) {
 	t.Helper()
 	root := t.TempDir()
@@ -155,7 +212,7 @@ func setupRunner(t *testing.T) (*Runner, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewRunner(st.DB, service.New(st), Suites(), ""), st
+	return NewRunner(st.DB, service.New(st), append(Suites(), fixtureSuite()), ""), st
 }
 
 func waitStatus(t *testing.T, r *Runner, runID string, deadline time.Duration, want ...string) Run {
@@ -182,7 +239,7 @@ func TestRunnerFTierPasses(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +270,11 @@ func TestRunnerSingleFlight(t *testing.T) {
 	server := fakeGateway(150 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	problem, ok := err.(*service.Error)
 	if !ok || problem.Status != 409 {
 		t.Fatalf("second start err=%v want 409", err)
@@ -230,7 +287,7 @@ func TestRunnerPauseResume(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +321,7 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +339,7 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 		t.Fatalf("%d 个用例未执行", pending)
 	}
 	// 每档判定落库（按级别计数）。
-	if !strings.Contains(final.TierResults, `"F":"`) || !strings.Contains(final.TierResults, "未通过") {
+	if !strings.Contains(final.TierResults, `"一":"`) || !strings.Contains(final.TierResults, "未通过") {
 		t.Fatalf("tier_results=%s", final.TierResults)
 	}
 }
@@ -294,7 +351,7 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,8 +372,8 @@ func TestRunnerCaseOverrides(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{},
-		map[string]string{"F-10": "skip", "F-08": "exempt"})
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{},
+		map[string]string{"T-10": "skip", "T-08": "exempt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,22 +387,22 @@ func TestRunnerCaseOverrides(t *testing.T) {
 	for _, row := range rows {
 		status[row.CaseID] = row.Status
 	}
-	if status["F-10"] != suite.StatusSkipped {
-		t.Fatalf("F-10=%s want skipped", status["F-10"])
+	if status["T-10"] != suite.StatusSkipped {
+		t.Fatalf("F-10=%s want skipped", status["T-10"])
 	}
-	if status["F-08"] != suite.StatusExempt {
-		t.Fatalf("F-08=%s want exempt", status["F-08"])
+	if status["T-08"] != suite.StatusExempt {
+		t.Fatalf("F-08=%s want exempt", status["T-08"])
 	}
-	if status["F-01"] != suite.StatusPassed {
-		t.Fatalf("F-01=%s want passed", status["F-01"])
+	if status["T-01"] != suite.StatusPassed {
+		t.Fatalf("F-01=%s want passed", status["T-01"])
 	}
 	// 非法覆盖值与未知用例在创建期拒绝。
-	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, map[string]string{"F-01": "bogus"})
+	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, map[string]string{"T-01": "bogus"})
 	problem, ok := err.(*service.Error)
 	if !ok || problem.Status != 400 {
 		t.Fatalf("非法覆盖值 err=%v want 400", err)
 	}
-	_, err = r.Start("tester", k3.Suite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "F", "", map[string]bool{}, map[string]string{"X-99": "skip"})
+	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, map[string]string{"X-99": "skip"})
 	if _, ok := err.(*service.Error); !ok {
 		t.Fatalf("未知用例 err=%v want 400", err)
 	}

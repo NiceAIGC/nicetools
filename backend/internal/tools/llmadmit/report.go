@@ -271,6 +271,8 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 	}
 	if masked {
 		rep.Environment.BaseURL = maskURL(run.BaseURL)
+		// 脱敏版连渠道名也隐去（渠道名可能暴露客户/供应商）。
+		rep.Environment.Channel = "已隐去"
 	}
 	if run.StartedAt != nil {
 		rep.Environment.StartedAt = run.StartedAt.Format(time.RFC3339)
@@ -332,16 +334,13 @@ func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult,
 	return rep
 }
 
+// tierRank 档位排序；兼容历史库中的 F/B/M/S 旧档位。
 func tierRank(tier string) int {
 	switch tier {
-	case "F":
+	case "准入", "F", "B", "M":
 		return 0
-	case "B":
+	default: // 压测 / S / 未知
 		return 1
-	case "M":
-		return 2
-	default:
-		return 3
 	}
 }
 
@@ -459,9 +458,9 @@ func renderMarkdown(rep report) string {
 		b.WriteString("\n")
 	}
 	if len(rep.Defects) > 0 {
-		b.WriteString("## 缺陷清单\n\n| 用例 | 级别 | 期望 | 实测 | 归因 |\n|---|---|---|---|---|\n")
+		b.WriteString("## 缺陷清单\n\n| 用例 | 级别 | 期望 | 实测 |\n|---|---|---|---|\n")
 		for _, d := range rep.Defects {
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", d.CaseID, d.Level, d.Expect, d.Actual, d.Attribution)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", d.CaseID, d.Level, d.Expect, d.Actual)
 		}
 		b.WriteString("\n")
 	}
@@ -524,13 +523,13 @@ func renderChartsMD(b *strings.Builder, cases []caseRow) {
 		p50, ok1 := m["ttft_p50_ms"].(float64)
 		p90, ok2 := m["ttft_p90_ms"].(float64)
 		if ok1 && ok2 && p50 > 0 {
-			ttfts = append(ttfts, bar{c.Tier + "-" + c.CaseID, p50, p90})
+			ttfts = append(ttfts, bar{chartLabel(c), p50, p90})
 		}
 		if rate, ok := m["cache_hit_rate_percent"].(float64); ok {
 			caches = append(caches, struct {
 				label string
 				rate  float64
-			}{c.Tier + "-" + c.CaseID, rate})
+			}{chartLabel(c), rate})
 		}
 	}
 	textBar := func(frac float64, width int) string {
@@ -560,6 +559,14 @@ func renderChartsMD(b *strings.Builder, cases []caseRow) {
 		}
 		b.WriteString("```\n")
 	}
+}
+
+// chartLabel 图表行标签：用例 ID 已含档位前缀时不重复拼接。
+func chartLabel(c caseRow) string {
+	if strings.HasPrefix(c.CaseID, c.Tier) {
+		return c.CaseID
+	}
+	return c.Tier + "-" + c.CaseID
 }
 
 func statusText(status string) string {
@@ -610,7 +617,7 @@ func renderCaseDetail(b *strings.Builder, c caseRow, masked bool) {
 	if json.Unmarshal(c.Defects, &defects) == nil && len(defects) > 0 {
 		b.WriteString("- **缺陷**：\n")
 		for _, d := range defects {
-			fmt.Fprintf(b, "  - `%s` 期望：%s；实测：%s；归因：%s\n", d.Level, d.Expect, d.Actual, d.Attribution)
+			fmt.Fprintf(b, "  - `%s` 期望：%s；实测：%s\n", d.Level, d.Expect, d.Actual)
 		}
 	}
 	// 指标表：压测/缓存等用例的量化结果（对应基准报告的判定明细区）。
