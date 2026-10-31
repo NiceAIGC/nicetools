@@ -210,13 +210,17 @@ func f01Fingerprint(c *suite.CaseCtx) suite.Outcome {
 	}, evidence...)
 }
 
-// F-02：身份自报 Kimi/Moonshot；"你是谁" prompt_tokens ≈8，≥50 判注入。
+// F-02：身份自报 Kimi/Moonshot；注入判定用「同任务内基线相对值」——
+// 官方 API 自带 ~78 token 系统 prompt（绝对锚点 ≈8 已过时），
+// 比较 "你是谁" 与 "a" 的 prompt_tokens 差值，超出正常问句开销才判注入。
 func f02Identity(c *suite.CaseCtx) suite.Outcome {
-	r1, rt1 := chat(c, map[string]any{"messages": userMsg("你是谁？"), "max_tokens": 64})
+	r1, rt1 := chat(c, map[string]any{"messages": userMsg("你是谁？"), "max_tokens": 512})
 	r2, rt2 := chat(c, map[string]any{"messages": userMsg("你是谁"), "max_tokens": 32})
+	r0, rt0 := chat(c, map[string]any{"messages": userMsg("a"), "max_tokens": 32})
 	evidence := []suite.Evidence{
-		ev("你是谁？", map[string]any{"max_tokens": 64}, r1, rt1),
+		ev("你是谁？", map[string]any{"max_tokens": 512}, r1, rt1),
 		ev("你是谁", map[string]any{"max_tokens": 32}, r2, rt2),
+		ev("基线 a", map[string]any{"max_tokens": 32}, r0, rt0),
 	}
 	var defects []suite.Defect
 	lower := strings.ToLower(r1.Content)
@@ -224,23 +228,26 @@ func f02Identity(c *suite.CaseCtx) suite.Outcome {
 	if !identityOK {
 		defects = append(defects, suite.Defect{Level: "P0", Expect: "自报 Kimi/Moonshot", Actual: truncate(r1.Content, 120), Attribution: "upstream"})
 	}
-	promptTokens := -1
+	promptTokens, baseTokens := -1, -1
 	if r2.HTTPStatus == 200 && r2.Usage != nil {
 		promptTokens = r2.Usage.PromptTokens
-		if promptTokens >= 50 {
-			defects = append(defects, suite.Defect{Level: "P0", Expect: "prompt_tokens ≈8", Actual: fmt.Sprintf("%d（判定注入隐藏 system prompt）", promptTokens), Attribution: "gateway"})
-		}
 	}
-	metrics := map[string]any{"prompt_tokens": promptTokens, "identity_ok": identityOK}
+	if r0.HTTPStatus == 200 && r0.Usage != nil {
+		baseTokens = r0.Usage.PromptTokens
+	}
+	if promptTokens >= 0 && baseTokens >= 0 && promptTokens > baseTokens+10 {
+		defects = append(defects, suite.Defect{Level: "P0", Expect: fmt.Sprintf("与基线差 ≤10（基线 %d）", baseTokens), Actual: fmt.Sprintf("%d（判定注入隐藏 system prompt）", promptTokens), Attribution: "gateway"})
+	}
+	metrics := map[string]any{"prompt_tokens": promptTokens, "baseline_tokens": baseTokens, "identity_ok": identityOK}
 	if len(defects) > 0 {
 		return fail("身份/注入检查未通过", defects, evidence...)
 	}
-	return pass(fmt.Sprintf("身份正确，prompt_tokens=%d", promptTokens), metrics, evidence...)
+	return pass(fmt.Sprintf("身份正确，prompt_tokens=%d（基线 %d）", promptTokens, baseTokens), metrics, evidence...)
 }
 
 // F-03：非流式标准结构。
 func f03Structure(c *suite.CaseCtx) suite.Outcome {
-	r, retries := chat(c, map[string]any{"messages": userMsg("用一句话介绍你自己"), "max_tokens": 64})
+	r, retries := chat(c, map[string]any{"messages": userMsg("用一句话介绍你自己"), "max_tokens": 512})
 	evidence := []suite.Evidence{ev("非流式", map[string]any{"max_tokens": 64}, r, retries)}
 	if r.HTTPStatus != 200 {
 		return fail(fmt.Sprintf("HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P1", Expect: "200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"}}, evidence...)
@@ -317,7 +324,7 @@ func f06OutputControl(c *suite.CaseCtx) suite.Outcome {
 
 // F-07：默认思考：reasoning_tokens > 0 或 reasoning_content 非空。
 func f07ThinkingDefault(c *suite.CaseCtx) suite.Outcome {
-	r, retries := chat(c, map[string]any{"messages": userMsg("9.11 和 9.9 哪个大？"), "max_tokens": 256})
+	r, retries := chat(c, map[string]any{"messages": userMsg("9.11 和 9.9 哪个大？"), "max_tokens": 512})
 	evidence := []suite.Evidence{ev("默认思考", map[string]any{}, r, retries)}
 	reasoning := r.Reasoning != "" || (r.Usage != nil && r.Usage.ReasoningTokens > 0)
 	if r.HTTPStatus == 200 && reasoning {
@@ -355,27 +362,40 @@ func f08Sampling(c *suite.CaseCtx) suite.Outcome {
 	return pass("采样契约与官方一致", nil, evidence...)
 }
 
-// F-09：思考开关：官方不可关；能关记 P1。
+// F-09：思考开关：官方 K3 不支持 thinking 参数，应报错或忽略并保持思考。
+// 用有区分度的推理题 + usage.reasoning_tokens 判定（避免「1+1」无推理造成误判）。
 func f09ThinkingOff(c *suite.CaseCtx) suite.Outcome {
-	body := map[string]any{"messages": userMsg("1+1=?"), "max_tokens": 64, "thinking": map[string]any{"type": "disabled"}}
-	r, retries := chat(c, body)
-	evidence := []suite.Evidence{ev("thinking.disabled", body, r, retries)}
-	if r.HTTPStatus != 200 {
-		return pass(fmt.Sprintf("HTTP %d（官方不可关，拒绝属正常）", r.HTTPStatus), nil, evidence...)
+	prompt := "证明根号 2 是无理数，给出完整证明过程"
+	off := map[string]any{"messages": userMsg(prompt), "max_tokens": 8192, "thinking": map[string]any{"type": "disabled"}}
+	r1, rt1 := chat(c, off)
+	normal := map[string]any{"messages": userMsg(prompt), "max_tokens": 8192}
+	r2, rt2 := chat(c, normal)
+	evidence := []suite.Evidence{
+		ev("thinking.disabled", off, r1, rt1),
+		ev("对照组", normal, r2, rt2),
 	}
-	if r.Reasoning == "" && (r.Usage == nil || r.Usage.ReasoningTokens == 0) {
-		return fail("思考被关闭（官方应不可关）", []suite.Defect{
-			{Level: "P1", Expect: "思考不可关", Actual: "reasoning 为空", Attribution: "upstream"},
-		}, evidence...)
+	if r1.HTTPStatus != 200 {
+		return pass(fmt.Sprintf("HTTP %d（按官方契约被拒，正常）", r1.HTTPStatus), nil, evidence...)
 	}
-	return pass("思考仍然开启", nil, evidence...)
+	offReasoning := usageReasoning(r1) > 0 || r1.Reasoning != ""
+	normalReasoning := usageReasoning(r2) > 0 || r2.Reasoning != ""
+	if !offReasoning && normalReasoning {
+		// 官方文档称 K3 不支持 thinking 参数，实测放行且生效——记文档偏离（P2），不否决。
+		return suite.Outcome{
+			Status:   suite.StatusPassed,
+			Summary:  "thinking.disabled 被放行且生效（与官方文档「不支持」偏离，记观察）",
+			Defects:  []suite.Defect{{Level: "P2", Expect: "thinking.disabled 报错或忽略（仍思考）", Actual: "disabled 组无思考而对照组有思考", Attribution: "gateway"}},
+			Evidence: evidence,
+		}
+	}
+	return pass(fmt.Sprintf("thinking 未被关闭（disabled 组 reasoning=%v）", offReasoning), nil, evidence...)
 }
 
 // F-10：四色象限 PNG 识别（P0）。
 func f10Image(c *suite.CaseCtx) suite.Outcome {
 	body := map[string]any{
 		"messages":   imageMsg("这张图片四个角分别是什么颜色？按左上、右上、左下、右下顺序回答。", colorPNG()),
-		"max_tokens": 128,
+		"max_tokens": 512,
 	}
 	r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 	evidence := []suite.Evidence{ev("四色图", body, r, retries)}
@@ -384,7 +404,8 @@ func f10Image(c *suite.CaseCtx) suite.Outcome {
 			{Level: "P0", Expect: "200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "upstream"},
 		}, evidence...)
 	}
-	ok := containsAll(r.Content, "红", "绿", "蓝", "黄") && containsAll(r.Content, "左上", "右上", "左下", "右下")
+	// 按序出现四色即算正确（官方常答「红色、绿色、蓝色、黄色」不带方位词）。
+	ok := containsAll(r.Content, "红", "绿", "蓝", "黄") && colorsInOrder(r.Content, "红", "绿", "蓝", "黄")
 	if ok {
 		return pass("四角颜色与位置全对", nil, evidence...)
 	}
@@ -428,6 +449,19 @@ func containsAll(s string, subs ...string) bool {
 		if !strings.Contains(s, sub) {
 			return false
 		}
+	}
+	return true
+}
+
+// colorsInOrder 要求颜色词按给定顺序出现（位置词可选，顺序必须正确）。
+func colorsInOrder(s string, colors ...string) bool {
+	offset := 0
+	for _, c := range colors {
+		i := strings.Index(s[offset:], c)
+		if i < 0 {
+			return false
+		}
+		offset += i + len(c)
 	}
 	return true
 }
