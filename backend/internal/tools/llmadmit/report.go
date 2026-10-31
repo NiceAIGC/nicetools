@@ -184,6 +184,19 @@ func levelNote(level string) string {
 	return level
 }
 
+// displayTrim 把缺陷的期望/实测文本截断到适合表格展示的长度：
+// 多行取首行，超长加省略号（完整原文仍在用例证据里）。
+func displayTrim(s string, max int) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		s = s[:i]
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
 // normalizeLevel 把历史级别名归一到 P0–P3，供计数统计。
 func normalizeLevel(level string) string {
 	switch level {
@@ -401,7 +414,7 @@ func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]
 		var rowDefects []suite.Defect
 		if json.Unmarshal([]byte(row.Defects), &rowDefects) == nil {
 			for _, d := range rowDefects {
-				dr := defectRow{CaseID: row.CaseID, Level: d.Level, Expect: d.Expect, Actual: d.Actual, Attribution: d.Attribution}
+				dr := defectRow{CaseID: row.CaseID, Level: d.Level, Expect: displayTrim(d.Expect, 80), Actual: displayTrim(d.Actual, 160), Attribution: d.Attribution}
 				if masked {
 					dr.Expect, dr.Actual = redact(dr.Expect, baseURL), redact(dr.Actual, baseURL)
 				}
@@ -621,7 +634,7 @@ func renderCaseDetail(b *strings.Builder, c caseRow, masked bool) {
 	if json.Unmarshal(c.Defects, &defects) == nil && len(defects) > 0 {
 		b.WriteString("- **缺陷**：\n")
 		for _, d := range defects {
-			fmt.Fprintf(b, "  - `%s` 期望：%s；实测：%s\n", d.Level, d.Expect, d.Actual)
+			fmt.Fprintf(b, "  - `%s` 期望：%s；实测：%s\n", d.Level, displayTrim(d.Expect, 80), displayTrim(d.Actual, 160))
 		}
 	}
 	// 指标表：压测/缓存等用例的量化结果（对应基准报告的判定明细区）。

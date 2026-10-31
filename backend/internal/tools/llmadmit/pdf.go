@@ -493,7 +493,7 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	if json.Unmarshal(c.Defects, &defects) == nil && len(defects) > 0 {
 		rows := [][]string{}
 		for _, d := range defects {
-			rows = append(rows, []string{d.Level, d.Expect, d.Actual})
+			rows = append(rows, []string{d.Level, displayTrim(d.Expect, 60), displayTrim(d.Actual, 120)})
 		}
 		w.table([]string{"级别", "期望", "实测"}, rows, []float64{40, 230, 245})
 	}
