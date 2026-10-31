@@ -56,14 +56,16 @@ func renderPDF(rep report) ([]byte, error) {
 	if rep.Brief {
 		w.text("（精简版：不含请求/响应原文，保留说明、判据与缺陷解释）", 8.5, 12)
 	}
-	w.kvGrid([][2]string{
+	for _, pair := range [][2]string{
 		{"渠道", orDash(rep.Environment.Channel)},
 		{"模型", rep.Environment.Model},
 		{"网关", rep.Environment.BaseURL},
 		{"档位", rep.Environment.Tier},
 		{"裁决", rep.Verdict},
 		{"时段", rep.Environment.StartedAt + " ~ " + rep.Environment.EndedAt},
-	})
+	} {
+		w.kvRow(pair[0], pair[1])
+	}
 	if rep.StopReason != "" {
 		w.text("说明："+rep.StopReason, 9, 13)
 	}
@@ -103,6 +105,7 @@ func renderPDF(rep report) ([]byte, error) {
 		tierRows = append(tierRows, []string{t.Tier, fmt.Sprint(t.Total), fmt.Sprint(t.Passed), fmt.Sprint(t.Failed), fmt.Sprint(t.Exempt), fmt.Sprint(t.Skipped)})
 	}
 	w.table([]string{"档位", "用例数", "通过", "失败", "豁免", "跳过"}, tierRows, []float64{60, 85, 85, 85, 85, 85})
+	w.renderCharts(rep.Cases)
 
 	if len(rep.Defects) > 0 {
 		w.gap(8)
@@ -129,69 +132,78 @@ func renderPDF(rep report) ([]byte, error) {
 	return w.pdf.GetBytesPdf(), w.err
 }
 
-// kvGrid 两列键值网格（环境信息）。
-func (w *pdfWriter) kvGrid(pairs [][2]string) {
-	for i := 0; i+1 < len(pairs); i += 2 {
-		w.ensure(14)
-		w.pdf.SetX(pdfMargin)
-		_ = w.pdf.SetFont("wqy", "", 9)
-		w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
-		_ = w.pdf.Text(pairs[i][0] + "：")
-		w.pdf.SetX(pdfMargin + 40)
-		w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-		_ = w.pdf.Text(clip(pairs[i][1], 60))
-		w.pdf.SetX(pdfMargin + 265)
-		w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
-		_ = w.pdf.Text(pairs[i+1][0] + "：")
-		w.pdf.SetX(pdfMargin + 305)
-		w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-		_ = w.pdf.Text(clip(pairs[i+1][1], 55))
-		w.y += 14
+// kvRow 一行键值（标签灰、值深色），杜绝双列重叠。
+func (w *pdfWriter) kvRow(label, value string) {
+	if w.err != nil {
+		return
 	}
-	if len(pairs)%2 == 1 {
-		last := pairs[len(pairs)-1]
-		w.text(last[0]+"："+last[1], 9, 14)
-	}
+	w.ensure(14)
+	_ = w.pdf.SetFont("wqy", "", 9)
+	w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
+	w.pdf.SetXY(pdfMargin, w.y)
+	_ = w.pdf.Text(label + "：")
+	w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+	w.pdf.SetXY(pdfMargin+44, w.y)
+	_ = w.pdf.Text(clip(value, 105))
+	w.y += 14
 }
 
-// table 渲染带表头底色与边框的表格（单元格单行，超长截断）。
+// table 渲染带表头底色与边框的表格（单元格按宽折行，行高自适应）。
 func (w *pdfWriter) table(headers []string, rows [][]string, widths []float64) {
 	if w.err != nil {
 		return
 	}
-	const rowH = 16.0
-	x0 := pdfMargin
-	w.ensure(rowH * float64(len(rows)+1))
-	// 表头
-	w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
-	w.pdf.Rectangle(x0, w.y, x0+sum(widths), w.y+rowH, "F", 0, 0)
-	w.cellRow(headers, widths, rowH, colorTitle)
-	w.y += rowH
-	// 数据行
-	for _, row := range rows {
-		w.cellRow(row, widths, rowH, colorTitle)
+	const lineH = 11.0
+	widths = fitWidths(widths)
+	drawRow := func(cells []string, fill bool) {
+		// 计算行高：最高的单元格行数
+		maxLines := 1
+		wrapped := make([][]string, len(cells))
+		for i, cell := range cells {
+			wrapped[i] = w.wrapUnits(cell, (widths[i]-8)/8.5)
+			if len(wrapped[i]) > maxLines {
+				maxLines = len(wrapped[i])
+			}
+		}
+		rowH := float64(maxLines)*lineH + 5
+		w.ensure(rowH)
+		x := pdfMargin
+		for i, lines := range wrapped {
+			if fill {
+				w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
+				w.pdf.Rectangle(x, w.y, x+widths[i], w.y+rowH, "F", 0, 0)
+			}
+			w.pdf.SetStrokeColor(colorBorder[0], colorBorder[1], colorBorder[2])
+			w.pdf.Rectangle(x, w.y, x+widths[i], w.y+rowH, "D", 0, 0)
+			_ = w.pdf.SetFont("wqy", "", 8.5)
+			w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+			for j, line := range lines {
+				w.pdf.SetXY(x+4, w.y+3+float64(j)*lineH)
+				_ = w.pdf.Text(line)
+			}
+			x += widths[i]
+		}
 		w.y += rowH
-		w.hline(w.y)
+	}
+	drawRow(headers, true)
+	for _, row := range rows {
+		drawRow(row, false)
 	}
 	w.y += 4
 }
 
-func (w *pdfWriter) cellRow(cells []string, widths []float64, rowH float64, fg [3]uint8) {
-	x := pdfMargin
-	_ = w.pdf.SetFont("wqy", "", 8.5)
-	for i, cell := range cells {
-		width := widths[i]
-		if i < len(widths)-1 && x+width > pdfWidth-pdfMargin {
-			width = pdfWidth - pdfMargin - x
-		}
-		w.pdf.SetFillColor(255, 255, 255)
-		w.pdf.SetStrokeColor(colorBorder[0], colorBorder[1], colorBorder[2])
-		w.pdf.Rectangle(x, w.y, x+width, w.y+rowH, "D", 0, 0)
-		w.pdf.SetTextColor(fg[0], fg[1], fg[2])
-		w.pdf.SetXY(x+4, w.y+4)
-		_ = w.pdf.Text(clipUnits(cell, (width-8)/8.5))
-		x += width
+// fitWidths 把列宽等比收缩到可用宽度内。
+func fitWidths(widths []float64) []float64 {
+	usable := pdfWidth - 2*pdfMargin
+	total := sum(widths)
+	if total <= usable {
+		return widths
 	}
+	out := make([]float64, len(widths))
+	for i, v := range widths {
+		out[i] = v * usable / total
+	}
+	return out
 }
 
 func (w *pdfWriter) hline(y float64) {
@@ -212,6 +224,83 @@ func sum(values []float64) float64 {
 	return total
 }
 
+// renderCharts 渲染性能图表：TTFT P50/P90 对比条与缓存命中率条（数据来自用例指标）。
+func (w *pdfWriter) renderCharts(cases []caseRow) {
+	type bar struct {
+		label    string
+		p50, p90 float64
+	}
+	var ttfts []bar
+	type cacheBar struct {
+		label string
+		rate  float64
+	}
+	var caches []cacheBar
+	for _, c := range cases {
+		var m map[string]any
+		if json.Unmarshal(c.Metrics, &m) != nil {
+			continue
+		}
+		p50, ok1 := m["ttft_p50_ms"].(float64)
+		p90, ok2 := m["ttft_p90_ms"].(float64)
+		if ok1 && ok2 && p50 > 0 {
+			ttfts = append(ttfts, bar{c.Tier + "-" + c.CaseID, p50, p90})
+		}
+		if rate, ok := m["cache_hit_rate_percent"].(float64); ok {
+			caches = append(caches, cacheBar{c.Tier + "-" + c.CaseID, rate})
+		}
+	}
+	if len(ttfts) < 2 && len(caches) < 2 {
+		return
+	}
+	const (
+		barH   = 8.0
+		labelW = 88.0
+		valueW = 64.0
+	)
+	maxW := pdfWidth - 2*pdfMargin - labelW - valueW
+	drawBar := func(label string, frac1, frac2 float64, text string) {
+		w.ensure(barH + 5)
+		_ = w.pdf.SetFont("wqy", "", 7.5)
+		w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
+		w.pdf.SetXY(pdfMargin, w.y+1)
+		_ = w.pdf.Text(clipUnits(label, labelW/7.5-1))
+		// 底槽
+		w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
+		w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW, w.y+barH, "F", 0, 0)
+		if frac2 > 0 {
+			w.pdf.SetFillColor(0x93, 0xa8, 0xc4)
+			w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW*frac2, w.y+barH, "F", 0, 0)
+		}
+		w.pdf.SetFillColor(colorTitle[0], colorTitle[1], colorTitle[2])
+		w.pdf.Rectangle(pdfMargin+labelW, w.y, pdfMargin+labelW+maxW*frac1, w.y+barH, "F", 0, 0)
+		w.pdf.SetXY(pdfMargin+labelW+maxW+4, w.y+1)
+		w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+		_ = w.pdf.Text(text)
+		w.y += barH + 4
+	}
+	if len(ttfts) >= 2 {
+		w.gap(8)
+		w.text("TTFT 对比（深=P50 浅=P90，ms）", 11, 16)
+		max := 1.0
+		for _, b := range ttfts {
+			if b.p90 > max {
+				max = b.p90
+			}
+		}
+		for _, b := range ttfts {
+			drawBar(b.label, b.p50/max, b.p90/max, fmt.Sprintf("%.0f / %.0f", b.p50, b.p90))
+		}
+	}
+	if len(caches) >= 2 {
+		w.gap(6)
+		w.text("缓存命中率（token 口径，%）", 11, 16)
+		for _, c := range caches {
+			drawBar(c.label, c.rate/100, 0, fmt.Sprintf("%.1f%%", c.rate))
+		}
+	}
+}
+
 // renderCase 渲染单用例卡片：标题条（状态着色）+ 说明/判据/实测 + 指标表 + 缺陷表 + 证据盒。
 func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	if w.err != nil {
@@ -225,7 +314,7 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	w.pdf.SetXY(pdfMargin+4, w.y+4)
 	_ = w.pdf.SetFont("wqy", "", 10)
 	w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-	_ = w.pdf.Text(fmt.Sprintf("%s-%s %s", c.Tier, c.CaseID, c.Name))
+	_ = w.pdf.Text(clipUnits(fmt.Sprintf("%s-%s %s", c.Tier, c.CaseID, c.Name), 60))
 	statusColor := colorPass
 	switch c.Status {
 	case suite.StatusFailed:
@@ -304,23 +393,24 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	w.y += 6
 }
 
-// box 灰底圆角文本盒（请求/响应原文）。
+// box 灰底连续文本盒（请求/响应原文），先算总高一次成形，避免条纹感。
 func (w *pdfWriter) box(text string, size float64) {
 	if w.err != nil {
 		return
 	}
 	lines := w.wrapUnits(text, (pdfWidth-2*pdfMargin-12)/size)
-	for _, line := range lines {
-		w.ensure(11)
-		w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
-		w.pdf.Rectangle(pdfMargin, w.y-1, pdfWidth-pdfMargin, w.y+10, "F", 0, 0)
-		w.pdf.SetXY(pdfMargin+6, w.y+1)
-		_ = w.pdf.SetFont("wqy", "", size)
-		w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+	lineH := size + 2.5
+	height := float64(len(lines))*lineH + 6
+	w.ensure(height)
+	w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
+	w.pdf.Rectangle(pdfMargin, w.y, pdfWidth-pdfMargin, w.y+height, "F", 0, 0)
+	_ = w.pdf.SetFont("wqy", "", size)
+	w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
+	for i, line := range lines {
+		w.pdf.SetXY(pdfMargin+6, w.y+3+float64(i)*lineH)
 		_ = w.pdf.Text(line)
-		w.y += 10
 	}
-	w.y += 2
+	w.y += height + 3
 }
 
 // textColored 彩色段落文本。

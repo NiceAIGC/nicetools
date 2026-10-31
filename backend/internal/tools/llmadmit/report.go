@@ -336,10 +336,12 @@ func tierRank(tier string) int {
 	switch tier {
 	case "F":
 		return 0
-	case "M":
+	case "B":
 		return 1
-	default:
+	case "M":
 		return 2
+	default:
+		return 3
 	}
 }
 
@@ -448,6 +450,7 @@ func renderMarkdown(rep report) string {
 		b.WriteString("\n")
 	}
 	renderSummaryMD(&b, rep)
+	renderChartsMD(&b, rep.Cases)
 	if len(rep.Declarations) > 0 {
 		b.WriteString("## 能力声明\n\n| 能力 | 声明支持 |\n|---|---|\n")
 		for k, v := range rep.Declarations {
@@ -500,6 +503,63 @@ func renderSummaryMD(b *strings.Builder, rep report) {
 		fmt.Fprintf(b, "| %s | %d | %d | %d | %d | %d |\n", t.Tier, t.Total, t.Passed, t.Failed, t.Exempt, t.Skipped)
 	}
 	b.WriteString("\n")
+}
+
+// renderChartsMD 渲染文本条形图（与 PDF 图表同源：TTFT 对比与缓存命中率）。
+func renderChartsMD(b *strings.Builder, cases []caseRow) {
+	type bar struct {
+		label    string
+		p50, p90 float64
+	}
+	var ttfts []bar
+	var caches []struct {
+		label string
+		rate  float64
+	}
+	for _, c := range cases {
+		var m map[string]any
+		if json.Unmarshal(c.Metrics, &m) != nil {
+			continue
+		}
+		p50, ok1 := m["ttft_p50_ms"].(float64)
+		p90, ok2 := m["ttft_p90_ms"].(float64)
+		if ok1 && ok2 && p50 > 0 {
+			ttfts = append(ttfts, bar{c.Tier + "-" + c.CaseID, p50, p90})
+		}
+		if rate, ok := m["cache_hit_rate_percent"].(float64); ok {
+			caches = append(caches, struct {
+				label string
+				rate  float64
+			}{c.Tier + "-" + c.CaseID, rate})
+		}
+	}
+	textBar := func(frac float64, width int) string {
+		filled := int(frac*float64(width) + 0.5)
+		if filled > width {
+			filled = width
+		}
+		return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	}
+	if len(ttfts) >= 2 {
+		b.WriteString("\n## TTFT 对比（P50 / P90，ms）\n\n```\n")
+		max := 1.0
+		for _, t := range ttfts {
+			if t.p90 > max {
+				max = t.p90
+			}
+		}
+		for _, t := range ttfts {
+			fmt.Fprintf(b, "%-14s %s %s %.0f/%.0f\n", t.label, textBar(t.p50/max, 24), textBar(t.p90/max, 24), t.p50, t.p90)
+		}
+		b.WriteString("```\n")
+	}
+	if len(caches) >= 2 {
+		b.WriteString("\n## 缓存命中率（token 口径，%）\n\n```\n")
+		for _, c := range caches {
+			fmt.Fprintf(b, "%-14s %s %.1f%%\n", c.label, textBar(c.rate/100, 40), c.rate)
+		}
+		b.WriteString("```\n")
+	}
 }
 
 func statusText(status string) string {

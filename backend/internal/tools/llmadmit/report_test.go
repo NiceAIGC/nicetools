@@ -103,6 +103,34 @@ func TestRenderPDF(t *testing.T) {
 	}
 }
 
+// 图表：有 TTFT/缓存指标的用例会产出图表区（PDF 与 MD 同数据源）。
+func TestReportCharts(t *testing.T) {
+	rows := []CaseResult{
+		{RunID: "r", Seq: 1, CaseID: "B-4K", Tier: "B", Name: "基准 <8K", Level: "P1", Status: "passed",
+			Metrics: `{"ttft_p50_ms":1240,"ttft_p90_ms":1965,"cache_hit_rate_percent":96.4}`, Defects: "[]"},
+		{RunID: "r", Seq: 2, CaseID: "B-12K", Tier: "B", Name: "基准 8-16K", Level: "P1", Status: "passed",
+			Metrics: `{"ttft_p50_ms":1645,"ttft_p90_ms":2579,"cache_hit_rate_percent":96.7}`, Defects: "[]"},
+	}
+	m := &Module{}
+	rep := m.buildReport(Run{ID: "r", Suite: "k3-v1", BaseURL: "http://gw", Model: "kimi-k3", Declarations: "{}"}, rows, false, "")
+	md := renderMarkdown(rep)
+	if !strings.Contains(md, "TTFT 对比") || !strings.Contains(md, "缓存命中率") {
+		t.Fatal("MD 缺图表区")
+	}
+	pdf, err := renderPDF(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PDF 是压缩流，图表内容在冒烟中用 pdftotext 验证；这里保证含图表数据的报告能渲染。
+	if len(pdf) < 10*1024 {
+		t.Fatalf("PDF 输出异常: %d bytes", len(pdf))
+	}
+	// 摘要统计：2 通过。
+	if rep.Summary.Passed != 2 || rep.Summary.Total != 2 {
+		t.Fatalf("summary=%+v", rep.Summary)
+	}
+}
+
 func TestRenderMarkdownWatermark(t *testing.T) {
 	run, rows := sampleRunAndRows()
 	m := &Module{}

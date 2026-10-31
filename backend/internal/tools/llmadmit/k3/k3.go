@@ -33,8 +33,9 @@ func Suite() suite.Suite {
 		},
 		Tiers: []suite.Tier{
 			{ID: "F", Name: "F 档 · 功能测试", Hint: "~30 请求 / <20k tokens / ~5 分钟", Cases: fCases()},
+			{ID: "B", Name: "B 档 · 基准测试（基本延迟与缓存）", Hint: "~350 请求 / ~10M tokens / ~15 分钟", Cases: bCases()},
 			{ID: "M", Name: "M 档 · 中等测试", Hint: "~120 请求 / 0.5–1M tokens / 30–60 分钟", Cases: mCases()},
-			{ID: "S", Name: "S 档 · 压力测试", Hint: "~400–800 请求 / 10–15M tokens / 1.5–3 小时", Cases: sCases()},
+			{ID: "S", Name: "S 档 · 真实压测", Hint: "~400–800 请求 / 10–15M tokens / 1.5–3 小时", Cases: sCases()},
 		},
 	}
 }

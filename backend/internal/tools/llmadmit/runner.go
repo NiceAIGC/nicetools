@@ -315,7 +315,7 @@ func verdictReason(verdict string, perTier map[string]string) string {
 		return ""
 	}
 	parts := []string{}
-	for _, tier := range []string{"F", "M", "S"} {
+	for _, tier := range []string{"F", "B", "M", "S"} {
 		if text, ok := perTier[tier]; ok && text != "0 项未通过" {
 			parts = append(parts, tier+" 档 "+text)
 		}

@@ -137,7 +137,7 @@ export default function LlmAdmission() {
   const [channel, setChannel] = useState(savedTarget.channel);
   const [suiteId, setSuiteId] = useState("");
   const [model, setModel] = useState(savedTarget.model);
-  const [tier, setTier] = useState("F");
+  const [tier, setTier] = useState("B");
   const [declarations, setDeclarations] = useState<Record<string, boolean>>({});
   const [overrides, setOverrides] = useState<Record<string, "skip" | "exempt">>({});
   const [submitting, setSubmitting] = useState(false);
