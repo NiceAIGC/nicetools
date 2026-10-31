@@ -36,11 +36,84 @@ type pdfWriter struct {
 	pdf *gopdf.GoPdf
 	y   float64
 	err error
+	// widths 是 size=100 基准下的逐字宽度缓存：折行/截断全部用字体精确度量，
+	// 不用经验估算（估算是版式溢出的根因）。
+	widths map[rune]float64
+}
+
+// runeWidth 返回字符在 size=100 下的字体精确宽度（懒缓存）。
+func (w *pdfWriter) runeWidth(r rune) float64 {
+	if rw, ok := w.widths[r]; ok {
+		return rw
+	}
+	if w.err != nil {
+		return 100
+	}
+	_ = w.pdf.SetFont("wqy", "", 100)
+	width, err := w.pdf.MeasureTextWidth(string(r))
+	if err != nil || width <= 0 {
+		width = 100
+	}
+	w.widths[r] = width
+	return width
+}
+
+// textWidth 是字符串在指定字号下的精确宽度。
+func (w *pdfWriter) textWidth(s string, size float64) float64 {
+	total := 0.0
+	for _, r := range s {
+		total += w.runeWidth(r)
+	}
+	return total * size / 100
+}
+
+// wrapUnits 按精确宽度折行（ usable 以 size 字号计）。
+func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
+	lines := []string{}
+	line := ""
+	for _, r := range s {
+		if r == '\n' {
+			lines = append(lines, line)
+			line = ""
+			continue
+		}
+		if w.textWidth(line+string(r), 100) > usable*100 && line != "" {
+			lines = append(lines, line)
+			line = string(r)
+		} else {
+			line += string(r)
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// clipUnits 按精确宽度截断并加省略号。
+func (w *pdfWriter) clipUnits(s string, usable float64) string {
+	line := ""
+	for _, r := range s {
+		if w.textWidth(line+string(r)+"…", 100) > usable*100 {
+			return line + "…"
+		}
+		line += string(r)
+	}
+	return s
+}
+
+// clip 按字符数截断（kv 网格用）。
+func clip(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 // renderPDF 把报告渲染为 PDF；排版参考基准报告：摘要总览 + 分档表格 + 用例详情卡。
 func renderPDF(rep report) ([]byte, error) {
-	w := &pdfWriter{pdf: &gopdf.GoPdf{}}
+	w := &pdfWriter{pdf: &gopdf.GoPdf{}, widths: map[rune]float64{}}
 	w.pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 	if err := w.pdf.AddTTFFontData("wqy", pdfFont); err != nil {
 		return nil, err
@@ -274,10 +347,11 @@ func (w *pdfWriter) renderCharts(cases []caseRow) {
 		w.pdf.Line(xBar+maxW, w.y-2, xBar+maxW, w.y+float64(len(ttfts))*(barH+5)-6)
 		for _, b := range ttfts {
 			w.ensure(barH + 5)
+			label := w.clipUnits(b.label, labelW/7.5-1)
 			_ = w.pdf.SetFont("wqy", "", 7.5)
 			w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
 			w.pdf.SetXY(pdfMargin, w.y+2)
-			_ = w.pdf.Text(clipUnits(b.label, labelW/7.5-1))
+			_ = w.pdf.Text(label)
 			w.pdf.SetFillColor(0xc7, 0xd2, 0xe4)
 			w.pdf.Rectangle(xBar, w.y, xBar+maxW*b.p90/maxTTFT, w.y+barH, "F", 0, 0)
 			w.pdf.SetFillColor(colorTitle[0], colorTitle[1], colorTitle[2])
@@ -296,10 +370,11 @@ func (w *pdfWriter) renderCharts(cases []caseRow) {
 		w.pdf.Line(xBar+maxW, w.y-2, xBar+maxW, w.y+float64(len(caches))*(barH+5)-6)
 		for _, c := range caches {
 			w.ensure(barH + 5)
+			label := w.clipUnits(c.label, labelW/7.5-1)
 			_ = w.pdf.SetFont("wqy", "", 7.5)
 			w.pdf.SetTextColor(colorMuted[0], colorMuted[1], colorMuted[2])
 			w.pdf.SetXY(pdfMargin, w.y+2)
-			_ = w.pdf.Text(clipUnits(c.label, labelW/7.5-1))
+			_ = w.pdf.Text(label)
 			w.pdf.SetFillColor(0x2f, 0x7d, 0xb8)
 			w.pdf.Rectangle(xBar, w.y, xBar+maxW*c.rate/100, w.y+barH, "F", 0, 0)
 			w.pdf.SetXY(xBar+maxW+6, w.y+2)
@@ -320,10 +395,11 @@ func (w *pdfWriter) renderCase(c caseRow, masked bool) {
 	// 标题条
 	w.pdf.SetFillColor(colorFill[0], colorFill[1], colorFill[2])
 	w.pdf.Rectangle(pdfMargin, w.y, pdfWidth-pdfMargin, w.y+barH, "F", 0, 0)
+	title := w.clipUnits(fmt.Sprintf("%s-%s %s", c.Tier, c.CaseID, c.Name), 60)
 	w.pdf.SetXY(pdfMargin+4, w.y+4)
 	_ = w.pdf.SetFont("wqy", "", 10)
 	w.pdf.SetTextColor(colorTitle[0], colorTitle[1], colorTitle[2])
-	_ = w.pdf.Text(clipUnits(fmt.Sprintf("%s-%s %s", c.Tier, c.CaseID, c.Name), 60))
+	_ = w.pdf.Text(title)
 	statusColor := colorPass
 	switch c.Status {
 	case suite.StatusFailed:
@@ -463,16 +539,17 @@ func (w *pdfWriter) ensure(h float64) {
 }
 
 // text 按可用宽度折行写一段文字；超页自动翻页。
-// 宽度用估算（CJK≈1em、ASCII≈0.5em），避免逐字 MeasureTextWidth 的 O(n²) 开销。
+// 注意顺序：先折行（测量会把字号切到 100），再 SetFont 回目标字号绘制。
 func (w *pdfWriter) text(s string, size, leading float64) {
 	if w.err != nil {
 		return
 	}
+	lines := w.wrapUnits(s, (pdfWidth-2*pdfMargin)/size)
 	if err := w.pdf.SetFont("wqy", "", size); err != nil {
 		w.err = err
 		return
 	}
-	for _, line := range w.wrapUnits(s, (pdfWidth-2*pdfMargin)/size) {
+	for _, line := range lines {
 		w.ensure(leading)
 		w.pdf.SetXY(pdfMargin, w.y)
 		if err := w.pdf.Text(line); err != nil {
@@ -481,58 +558,4 @@ func (w *pdfWriter) text(s string, size, leading float64) {
 		}
 		w.y += leading
 	}
-}
-
-// wrapUnits 按估算宽度折行（CJK=1，其他=0.55）。
-func (w *pdfWriter) wrapUnits(s string, usable float64) []string {
-	lines := []string{}
-	units := 0.0
-	line := ""
-	for _, r := range s {
-		if r == '\n' {
-			lines = append(lines, line)
-			line, units = "", 0
-			continue
-		}
-		w_ := 0.55
-		if r > 0x2E7F {
-			w_ = 1.0
-		}
-		if units+w_ > usable && line != "" {
-			lines = append(lines, line)
-			line, units = string(r), w_
-		} else {
-			line += string(r)
-			units += w_
-		}
-	}
-	if line != "" {
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// clip 按字符数截断（kv 网格用）。
-func clip(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max-1]) + "…"
-}
-
-// clipUnits 按估算宽度截断（表格单元格用）。
-func clipUnits(s string, usable float64) string {
-	units := 0.0
-	for i, r := range s {
-		w_ := 0.55
-		if r > 0x2E7F {
-			w_ = 1.0
-		}
-		if units+w_ > usable {
-			return s[:i] + "…"
-		}
-		units += w_
-	}
-	return s
 }
