@@ -56,7 +56,7 @@ func mCases() []suite.Case {
 		{ID: "M-39", Group: suite.GroupCache, Name: "缓存写入与字段", Level: suite.LevelRequired, Run: m39CacheField, Doc: suite.CaseDoc{Purpose: "确认缓存写入可观测，且命中后字段完整。", Method: "2048 token 唯一前缀预热 + 重发一次，显式 5m TTL。", Expect: "首次 cache_write_tokens>0；第二次 cached_tokens>0 且 prompt_tokens_details 存在；必过。", Ref: "§5.1 M-39"}},
 		{ID: "M-41", Name: "无鉴权 401", Level: suite.LevelRequired, Run: m41NoAuth, Doc: suite.CaseDoc{Purpose: "防止未鉴权访问。", Method: "不带 Authorization 发请求。", Expect: "HTTP 401；必过。", Ref: "§5.1 M-41"}},
 		{ID: "M-42", Name: "错误 key 401", Level: suite.LevelRequired, Run: m42BadKey, Doc: suite.CaseDoc{Purpose: "验证错误凭证被拒。", Method: "随机无效 API key 发请求。", Expect: "HTTP 401；必过。", Ref: "§5.1 M-42"}},
-		{ID: "M-43", Name: "无效模型 404", Level: suite.LevelRecord, Run: m43InvalidModel, Doc: suite.CaseDoc{Purpose: "记录无效模型错误契约。", Method: "随机不存在 model 请求。", Expect: "404 通过；403/503 判 P1，其他状态记录。", Ref: "§5.1 M-43"}},
+		{ID: "M-43", Name: "无效模型拒绝", Level: suite.LevelRecord, Run: m43InvalidModel, Doc: suite.CaseDoc{Purpose: "记录无效模型错误契约。", Method: "随机不存在 model 请求。", Expect: "404/403 均视为拒绝；503 判 P1；其他状态记录。", Ref: "§5.1 M-43"}},
 		{ID: "M-44", Name: "错误体无网关指纹", Level: suite.LevelRecord, Run: m44ErrorFingerprint, Doc: suite.CaseDoc{Purpose: "避免错误体泄露网关实现。", Method: "无效模型触发错误，匹配已知网关指纹。", Expect: "无 LiteLLM、New API、Tengine、Distributor；泄露记 P2。", Ref: "§5.1 M-44"}},
 		{ID: "M-45", Name: "超大 max_tokens 处理", Level: suite.LevelRecord, Run: m45HugeMaxTokens, Doc: suite.CaseDoc{Purpose: "记录网关对超大输出预算的处理方式。", Method: "max_tokens=99999999。", Expect: "记录 400 拒绝或 200 自动收敛；不设否决线（官方允许按上下文自动降低）。", Ref: "§5.1 M-45"}},
 		{ID: "M-46", Name: "越界 max_completion_tokens", Level: suite.LevelRecord, Run: m46OutOfRange, Doc: suite.CaseDoc{Purpose: "检验 completion 参数边界。", Method: "分别传 0、99999999。", Expect: "两值均不得 200；放行记 P2 观察。", Ref: "§5.1 M-46"}},
@@ -507,14 +507,29 @@ func m29ImageURL(c *suite.CaseCtx) suite.Outcome {
 	return pass(fmt.Sprintf("HTTP %d（公网图拉取失败属网络环境，记录）", r.HTTPStatus), nil, e)
 }
 
-// 视频多模态请求需要给思考链留足预算；64 会被 reasoning 吃光，正文为空。
-const videoProbeMaxTokens = 600
+// 视频多模态请求需要给思考链留足预算；600 会被 reasoning 吃光，正文为空。
+const videoProbeMaxTokens = 4096
+
+// videoChat 在 finish=length 或正文为空时用 8192 预算补测一次，避免把“思考吃光预算”误判成视频识别失败。
+func videoChat(c *suite.CaseCtx, body map[string]any) (suite.CallResult, int) {
+	r, retries := chatTimeout(c, body, suite.TimeoutLarge)
+	if r.HTTPStatus == 200 && (r.FinishReason == "length" || strings.TrimSpace(r.Content) == "") {
+		retry := make(map[string]any, len(body)+1)
+		for k, v := range body {
+			retry[k] = v
+		}
+		retry["max_tokens"] = 8192
+		r2, rt2 := chatTimeout(c, retry, suite.TimeoutLarge)
+		return r2, retries + rt2
+	}
+	return r, retries
+}
 
 func m30Video(c *suite.CaseCtx) suite.Outcome {
 	redBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": videoProbeMaxTokens}
-	r1, rt1 := chatTimeout(c, redBody, suite.TimeoutLarge)
+	r1, rt1 := videoChat(c, redBody)
 	blueBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(blueMP4)), "max_tokens": videoProbeMaxTokens}
-	r2, rt2 := chatTimeout(c, blueBody, suite.TimeoutLarge)
+	r2, rt2 := videoChat(c, blueBody)
 	evidence := []suite.Evidence{ev("红视频", redBody, r1, rt1), ev("蓝视频", blueBody, r2, rt2)}
 	ok1 := r1.HTTPStatus == 200 && strings.Contains(r1.Content, "红")
 	ok2 := r2.HTTPStatus == 200 && strings.Contains(r2.Content, "蓝")
@@ -540,7 +555,7 @@ func videoResultText(r suite.CallResult, want string) string {
 }
 
 func m31VideoURL(c *suite.CaseCtx) suite.Outcome {
-	body := map[string]any{"messages": videoMsg("描述这段视频。", "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"), "max_tokens": 512}
+	body := map[string]any{"messages": videoMsg("描述这段视频。", "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"), "max_tokens": videoProbeMaxTokens}
 	r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 	e := ev("公网视频", body, r, retries)
 	return pass(fmt.Sprintf("HTTP %d（公网视频拉取受网络环境影响，记录）", r.HTTPStatus), map[string]any{"http_status": r.HTTPStatus}, e)
@@ -769,10 +784,14 @@ func m43InvalidModel(c *suite.CaseCtx) suite.Outcome {
 	r := c.Client.Chat(c, suite.Target{BaseURL: c.Target.BaseURL, APIKey: c.Target.APIKey, Model: "not-exist-model-" + nonce()}, map[string]any{"messages": userMsg("a"), "max_tokens": 32}, suite.TimeoutNormal)
 	e := ev("无效模型", map[string]any{}, r, 0)
 	if r.HTTPStatus == 404 {
-		return pass("404", nil, e)
+		return pass("404 拒绝", nil, e)
 	}
-	if r.HTTPStatus == 503 || r.HTTPStatus == 403 {
-		return fail(fmt.Sprintf("HTTP %d（应 404）", r.HTTPStatus), []suite.Defect{{Level: "P1", Expect: "404", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"}}, e)
+	if r.HTTPStatus == 403 {
+		// New API 常用 403 model_access_denied；仍是明确拒绝，不按 503 处理。
+		return pass("403 拒绝（模型不可用/访问受限）", nil, e)
+	}
+	if r.HTTPStatus == 503 {
+		return fail("HTTP 503：网关不可用，未明确拒绝无效模型", []suite.Defect{{Level: "P1", Expect: "403/404 拒绝", Actual: "503", Attribution: "gateway"}}, e)
 	}
 	return pass(fmt.Sprintf("HTTP %d（记录行为）", r.HTTPStatus), nil, e)
 }
@@ -1320,7 +1339,7 @@ func m30BVideoChannels(c *suite.CaseCtx) suite.Outcome {
 	metrics := map[string]any{}
 
 	b64Body := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": videoProbeMaxTokens}
-	r1, rt1 := chatTimeout(c, b64Body, suite.TimeoutLarge)
+	r1, rt1 := videoChat(c, b64Body)
 	evidence = append(evidence, ev("base64 通道", b64Body, r1, rt1))
 	metrics["base64_http"] = r1.HTTPStatus
 	metrics["base64_finish"] = r1.FinishReason
@@ -1335,7 +1354,7 @@ func m30BVideoChannels(c *suite.CaseCtx) suite.Outcome {
 		metrics["url_http"] = "本服务未配置公开地址，URL 通道未测"
 	} else {
 		urlBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", url), "max_tokens": videoProbeMaxTokens}
-		r2, rt2 := chatTimeout(c, urlBody, suite.TimeoutLarge)
+		r2, rt2 := videoChat(c, urlBody)
 		evidence = append(evidence, ev("URL 通道", urlBody, r2, rt2))
 		metrics["url_http"] = r2.HTTPStatus
 		metrics["url_finish"] = r2.FinishReason
