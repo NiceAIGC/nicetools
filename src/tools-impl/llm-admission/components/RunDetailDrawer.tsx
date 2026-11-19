@@ -69,15 +69,15 @@ export default function RunDetailDrawer({
   const [attemptBundles, setAttemptBundles] = useState<CaseAttemptBundle[]>([]);
   const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
 
-  const refresh = useCallback(async (id: string) => {
+  const refresh = useCallback(async (id: string, showSpinner = false) => {
+    if (showSpinner) setLoading(true);
     try {
-      setLoading(true);
       setDetail(await runDetail(id));
       setError("");
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
   }, []);
 
@@ -92,7 +92,8 @@ export default function RunDetailDrawer({
       setDetail(null);
       return;
     }
-    refresh(run.id);
+    setDetail(null);
+    refresh(run.id, true);
     listCaseAttempts(run.id).then((res) => setAttemptBundles(res.cases ?? [])).catch(() => {});
   }, [run, refresh]);
 
@@ -210,7 +211,7 @@ export default function RunDetailDrawer({
               )}
             </DrawerHeader>
             <DrawerBody>
-              {loading && <div className="flex items-center gap-2 py-8 text-sm text-default-500"><Spinner size="sm" /> 正在加载任务详情…</div>}
+              {loading && !detail && <div className="flex items-center gap-2 py-8 text-sm text-default-500"><Spinner size="sm" /> 正在加载任务详情…</div>}
               {error && <p className="rounded-medium bg-danger/10 p-3 text-sm text-danger">{error}</p>}
               {detail && (
                 <>
