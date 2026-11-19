@@ -211,6 +211,8 @@ func (t *traceTiming) apply(r *CallResult) {
 // Client 是 OpenAI 兼容网关的最小客户端。
 type Client struct {
 	http *http.Client
+	// OnRequest 可选：每发起一次上游请求调用一次（含重试），供实时进度展示。
+	OnRequest func()
 }
 
 func NewClient() *Client {
@@ -227,6 +229,9 @@ func NewClient() *Client {
 // Get 执行简单 GET（如 /v1/models），返回状态码与正文（截断）。
 // 带整体超时：连接 30s 之外，正文读取同样受限（历史上正文挂死导致用例卡死）。
 func (c *Client) Get(ctx context.Context, t Target, path string) (int, string, error) {
+	if c.OnRequest != nil {
+		c.OnRequest()
+	}
 	ctx, cancel := context.WithTimeout(ctx, TimeoutNormal)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(t.BaseURL, "/")+path, nil)
@@ -265,6 +270,9 @@ func (c *Client) ChatRaw(ctx context.Context, t Target, body io.Reader, contentL
 }
 
 func (c *Client) doChat(ctx context.Context, t Target, body io.Reader, contentLength int64, stream bool, timeout time.Duration) CallResult {
+	if c.OnRequest != nil {
+		c.OnRequest()
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, strings.TrimSuffix(t.BaseURL, "/")+"/chat/completions", body)
@@ -598,6 +606,9 @@ func messagesURLs(base string) []string {
 }
 
 func (c *Client) postJSON(ctx context.Context, t Target, url string, body map[string]any, timeout time.Duration, anthropic bool) CallResult {
+	if c.OnRequest != nil {
+		c.OnRequest()
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return CallResult{ErrKind: "client", ErrMsg: err.Error()}
@@ -630,6 +641,9 @@ func (c *Client) postJSON(ctx context.Context, t Target, url string, body map[st
 
 // ModelsCall 返回 /models 的完整证据（含请求头/响应头），供前置闸门留档。
 func (c *Client) ModelsCall(ctx context.Context, t Target) CallResult {
+	if c.OnRequest != nil {
+		c.OnRequest()
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, TimeoutNormal)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, strings.TrimSuffix(t.BaseURL, "/")+"/models", nil)

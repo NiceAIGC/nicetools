@@ -46,6 +46,16 @@ export interface Run {
   assessed?: number;
   pass_rate?: number;
   grade?: string;
+  progress?: {
+    case_id: string;
+    case_name: string;
+    step?: string;
+    done: number;
+    total: number;
+    requests: number;
+    started_at: string;
+    updated_at: string;
+  };
 }
 
 export interface DomainGroup {

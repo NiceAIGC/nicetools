@@ -120,6 +120,9 @@ func (m *Module) runsByDomain() ([]domainGroup, error) {
 		return nil, err
 	}
 	m.annotateRuns(runs)
+	if m.runner != nil {
+		m.runner.attachProgress(runs)
+	}
 	groups := make(map[string]*domainGroup)
 	hostSeen := make(map[string]map[string]bool)
 	modelSeen := make(map[string]map[string]bool)

@@ -222,6 +222,9 @@ func (m *Module) runs(c *gin.Context) {
 		list = []Run{}
 	}
 	m.annotateRuns(list)
+	if m.runner != nil {
+		m.runner.attachProgress(list)
+	}
 	c.JSON(200, list)
 }
 
@@ -251,6 +254,10 @@ func (m *Module) runDetail(c *gin.Context) {
 
 	// annotateRuns 修改的是切片元素，单独给当前 run 打分。
 	scoreRun(&run, rows)
+	if m.runner != nil {
+		m.runner.attachProgress([]Run{run})
+		run.Progress = m.runner.progressFor(run.ID)
+	}
 	c.JSON(200, gin.H{"run": run, "cases": rows})
 }
 

@@ -228,7 +228,10 @@ func m12Effort(c *suite.CaseCtx) suite.Outcome {
 	var evidence []suite.Evidence
 	tokens := map[string]int{}
 	var defects []suite.Defect
-	for _, effort := range []string{"low", "high", "max"} {
+	for idx, effort := range []string{"low", "high", "max"} {
+		if c.Progress != nil {
+			c.Progress(idx, 3, "effort="+effort)
+		}
 		body := map[string]any{"messages": userMsg("证明根号 2 是无理数"), "max_tokens": 4096, "reasoning_effort": effort}
 		r, retries := chat(c, body)
 		if r.HTTPStatus == 200 && r.FinishReason == "length" {
@@ -682,6 +685,9 @@ func m38EOS(c *suite.CaseCtx) suite.Outcome {
 	var evidence []suite.Evidence
 	bad := []string{}
 	for i := range 20 {
+		if c.Progress != nil {
+			c.Progress(i, 20, "EOS 抑制")
+		}
 		body := map[string]any{"messages": userMsg("请直接回答OK"), "max_tokens": 32}
 		r, retries := chat(c, body)
 		evidence = append(evidence, ev(fmt.Sprintf("第 %d 次", i+1), body, r, retries))
@@ -1102,6 +1108,9 @@ type videoLimitResult struct {
 const videoLimitPrompt = "这段视频是什么颜色？只回答颜色。"
 
 func videoLimitProbe(c *suite.CaseCtx, label string, size int, uri string) (suite.CallResult, int, suite.Evidence) {
+	if c.Progress != nil {
+		c.Progress(0, 0, fmt.Sprintf("%s %.1f MiB", label, float64(size)/(1<<20)))
+	}
 	body := map[string]any{"messages": videoMsg(videoLimitPrompt, uri), "max_tokens": videoProbeMaxTokens}
 	r, retries := chatTimeout(c, body, suite.TimeoutOutput)
 	payload, _ := json.Marshal(body)
@@ -1137,6 +1146,9 @@ func paddedMP4Reader(size int) io.Reader {
 
 // videoLimitBase64Probe 把 base64 编码直接写入 HTTP 请求 pipe，避免完整 base64/JSON 常驻内存。
 func videoLimitBase64Probe(c *suite.CaseCtx, label string, size int) (suite.CallResult, int, suite.Evidence) {
+	if c.Progress != nil {
+		c.Progress(0, 0, fmt.Sprintf("%s %.1f MiB", label, float64(size)/(1<<20)))
+	}
 	const marker = "__NICETOOLS_VIDEO_BASE64__"
 	body := map[string]any{"model": c.Target.Model, "messages": videoMsg(videoLimitPrompt, "data:video/mp4;base64,"+marker), "max_tokens": videoProbeMaxTokens}
 	raw, _ := json.Marshal(body)
@@ -1370,7 +1382,10 @@ func mB3CacheTTL(c *suite.CaseCtx) suite.Outcome {
 	curve := []map[string]any{}
 	hitAt30 := false
 	previous := 0
-	for _, sec := range checkpoints {
+	for idx, sec := range checkpoints {
+		if c.Progress != nil {
+			c.Progress(idx, len(checkpoints), fmt.Sprintf("TTL %ds", sec))
+		}
 		// 2 秒切片等待，保证暂停/终止可在 TTL 探测期间生效。
 		for remaining := sec - previous; remaining > 0; remaining -= 2 {
 			if err := c.CheckControl(); err != nil {
@@ -1425,11 +1440,17 @@ func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 	var evidence []suite.Evidence
 	var defects []suite.Defect
 	metrics := map[string]any{}
-	for _, sc := range scenarios {
+	for idx, sc := range scenarios {
+		if c.Progress != nil {
+			c.Progress(idx*6, len(scenarios)*6, sc.name+" 预热")
+		}
 		r, retries := chat(c, sc.build(0))
 		evidence = append(evidence, ev(sc.name+" 预热", sc.build(0), r, retries))
 		prompt, cached := 0, 0
 		for i := range 5 {
+			if c.Progress != nil {
+				c.Progress(idx*6+i+1, len(scenarios)*6, fmt.Sprintf("%s 测量 %d/5", sc.name, i+1))
+			}
 			r, retries := chat(c, sc.build(i))
 			evidence = append(evidence, ev(fmt.Sprintf("%s 测量 %d", sc.name, i+1), sc.build(i), r, retries))
 			if r.Usage != nil {

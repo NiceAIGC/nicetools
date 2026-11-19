@@ -39,11 +39,13 @@ type Runner struct {
 	origin string // 公网地址（媒体托管 URL 用），空则降级
 
 	// slot 容量 1：同一时间只执行一个任务；其余任务在 queued 状态排队。
-	slot     chan struct{}
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	done     chan struct{}
-	activeID string
+	slot       chan struct{}
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	done       chan struct{}
+	activeID   string
+	progressMu sync.Mutex
+	progress   map[string]*RunProgress
 }
 
 func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOrigin string) *Runner {
@@ -51,7 +53,7 @@ func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOr
 	for _, s := range suites {
 		byID[s.ID] = s
 	}
-	return &Runner{db: db, svc: svc, suites: byID, origin: publicOrigin, slot: make(chan struct{}, 1)}
+	return &Runner{db: db, svc: svc, suites: byID, origin: publicOrigin, slot: make(chan struct{}, 1), progress: map[string]*RunProgress{}}
 }
 
 // Recover 在服务重启后把中断的任务标记为 aborted（已完成用例留档不丢）。
@@ -90,6 +92,62 @@ func newRunID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func (r *Runner) setProgress(runID string, p RunProgress) {
+	if runID == "" {
+		return
+	}
+	now := time.Now()
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	current := r.progress[runID]
+	if current == nil {
+		p.StartedAt = now
+		current = &p
+		r.progress[runID] = current
+	} else {
+		if p.CaseID != "" {
+			current.CaseID, current.CaseName = p.CaseID, p.CaseName
+		}
+		if p.Step != "" {
+			current.Step = p.Step
+		}
+		current.Done, current.Total = p.Done, p.Total
+	}
+	current.UpdatedAt = now
+}
+
+func (r *Runner) bumpRequest(runID string) {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	if p := r.progress[runID]; p != nil {
+		p.Requests++
+		p.UpdatedAt = time.Now()
+	}
+}
+
+func (r *Runner) clearProgress(runID string) {
+	r.progressMu.Lock()
+	delete(r.progress, runID)
+	r.progressMu.Unlock()
+}
+
+func (r *Runner) progressFor(runID string) *RunProgress {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	if p := r.progress[runID]; p != nil {
+		copy := *p
+		return &copy
+	}
+	return nil
+}
+
+// attachProgress 把实时进度挂到 API 返回的任务副本上。
+func (r *Runner) attachProgress(runs []Run) {
+	for i := range runs {
+		runs[i].Progress = r.progressFor(runs[i].ID)
+	}
 }
 
 // Start 保留旧调用：不指定自定义用例集，按 preset 选择。
@@ -336,6 +394,7 @@ func (r *Runner) control(ctx context.Context, runID string) func() error {
 
 func (r *Runner) loop(ctx context.Context, runID string) {
 	defer func() {
+		r.clearProgress(runID)
 		<-r.slot
 		r.dispatch()
 	}()
@@ -472,9 +531,16 @@ func (r *Runner) execute(ctx context.Context, run Run, c suite.Case, target suit
 	}
 	now := time.Now()
 	r.db.Model(row).Updates(map[string]any{"status": suite.StatusRunning, "started_at": &now})
+	client := suite.NewClient()
+	client.OnRequest = func() { r.bumpRequest(run.ID) }
+	r.setProgress(run.ID, RunProgress{CaseID: c.ID, CaseName: c.Name, StartedAt: now})
 	caseCtx := &suite.CaseCtx{
-		Context: ctx, Target: target, Client: suite.NewClient(),
-		Declared: declared,
+		Context: ctx, Target: target, Client: client,
+		Declared:  declared,
+		OnRequest: func() { r.bumpRequest(run.ID) },
+		Progress: func(done, total int, step string) {
+			r.setProgress(run.ID, RunProgress{CaseID: c.ID, CaseName: c.Name, Step: step, Done: done, Total: total})
+		},
 		MediaURL: func(name string) string {
 			if r.origin == "" || run.MediaToken == "" {
 				return ""

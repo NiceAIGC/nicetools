@@ -105,6 +105,17 @@ function groupMatches(group: DomainGroup, query: string, status: string, model: 
     .includes(q);
 }
 
+function activeProgress(group: DomainGroup) {
+  return group.runs.find((r) => ["running", "pausing", "paused"].includes(r.status) && r.progress)?.progress;
+}
+
+function progressText(run: Run): string {
+  const p = run.progress;
+  if (!p) return "";
+  const step = p.step || p.case_name || p.case_id;
+  return `${step}${p.total > 0 ? ` · ${p.done}/${p.total}` : ""} · 请求 ${p.requests}`;
+}
+
 function domainCardSummary(group: DomainGroup): string {
   const gs = groupStatus(group);
   if (gs === "running" || gs === "pausing") return "运行中";
@@ -357,6 +368,15 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                         最近 {displayTime(latest?.created_at || "")}
                         {latest?.id ? ` · ${latest.id}` : ""}
                       </p>
+                      {activeProgress(group) && (
+                        <div className="mt-2 max-w-lg">
+                          <Progress
+                            size="sm"
+                            value={activeProgress(group)!.total ? (activeProgress(group)!.done / activeProgress(group)!.total) * 100 : 0}
+                            label={progressText(group.runs.find((r) => ["running", "pausing", "paused"].includes(r.status) && r.progress)!)}
+                          />
+                        </div>
+                      )}
                     </button>
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                       {(group.last_completed || latest) && (
@@ -410,9 +430,10 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                                 {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
                                 {isActive && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
                               </div>
-                              {!isActive && run.status === "failed" && (
-                                <div className="lg:col-span-8 lg:hidden">
-                                  <Progress size="sm" value={run.total_cases ? (run.done_cases / run.total_cases) * 100 : 0} />
+                              {run.progress && isActive && (
+                                <div className="col-span-full mt-1 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                                  <Progress size="sm" className="min-w-0 flex-1" value={run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0} />
+                                  <span className="text-xs text-default-400">{progressText(run)}</span>
                                 </div>
                               )}
                             </div>

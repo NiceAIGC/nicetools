@@ -75,6 +75,10 @@ type CaseCtx struct {
 	// CheckControl 供长耗时用例在内部循环检查暂停/终止；
 	// 返回非 nil 时用例应立即收尾返回该错误。
 	CheckControl func() error
+	// Progress 可选：长用例在内部循环汇报子进度。
+	Progress func(done, total int, step string)
+	// OnRequest 可选：每次真正发起上游 HTTP 请求时递增请求计数。
+	OnRequest func()
 }
 
 // CaseDoc 是用例说明：为什么测、怎么测、预期是什么、规范出处。

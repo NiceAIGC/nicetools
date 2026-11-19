@@ -2,6 +2,18 @@ package llmadmit
 
 import "time"
 
+// RunProgress 是运行中任务的实时进度（仅内存展示，不落库）。
+type RunProgress struct {
+	CaseID    string    `json:"case_id"`
+	CaseName  string    `json:"case_name"`
+	Step      string    `json:"step,omitempty"`
+	Done      int       `json:"done"`
+	Total     int       `json:"total"`
+	Requests  int       `json:"requests"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Run 是一次准入测试任务。APIKey 只进不出（json:"-"），导出报告一律脱敏。
 type Run struct {
 	ID            string `gorm:"primaryKey" json:"id"`
@@ -37,11 +49,12 @@ type Run struct {
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	// 以下字段只用于 API 展示，不落库；由用例结果即时计算。
-	Passed   int     `gorm:"-" json:"passed"`
-	Failed   int     `gorm:"-" json:"failed"`
-	Assessed int     `gorm:"-" json:"assessed"`
-	PassRate float64 `gorm:"-" json:"pass_rate"`
-	Grade    string  `gorm:"-" json:"grade"`
+	Passed   int          `gorm:"-" json:"passed"`
+	Failed   int          `gorm:"-" json:"failed"`
+	Assessed int          `gorm:"-" json:"assessed"`
+	PassRate float64      `gorm:"-" json:"pass_rate"`
+	Grade    string       `gorm:"-" json:"grade"`
+	Progress *RunProgress `gorm:"-" json:"progress,omitempty"`
 }
 
 func (Run) TableName() string { return "tool_llmadmit_runs" }

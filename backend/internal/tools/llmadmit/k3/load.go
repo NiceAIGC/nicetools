@@ -3,6 +3,7 @@ package k3
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"nicetools/backend/internal/tools/llmadmit/suite"
 )
@@ -19,6 +20,7 @@ type sSample struct {
 func sRequests(c *suite.CaseCtx, concurrency, count int, build func(int) (string, map[string]any)) ([]sSample, bool) {
 	jobs := make(chan int, count)
 	results := make(chan sSample, count)
+	var completed atomic.Int64
 	var wg sync.WaitGroup
 	for range concurrency {
 		wg.Add(1)
@@ -31,6 +33,9 @@ func sRequests(c *suite.CaseCtx, concurrency, count int, build func(int) (string
 				label, body := build(i)
 				r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 				results <- sSample{label: label, body: body, result: r, retries: retries}
+				if c.Progress != nil {
+					c.Progress(int(completed.Add(1)), count, "基准样本")
+				}
 			}
 		}()
 	}

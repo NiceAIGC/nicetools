@@ -187,6 +187,19 @@ export default function RunDetailDrawer({
                       </div>
                     ))}
                   </div>
+                  {detail.run.progress && (
+                    <div className="rounded-medium border border-primary/20 bg-primary/5 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="font-medium text-default-700">当前：{detail.run.progress.case_id} {detail.run.progress.case_name}</span>
+                        <span className="text-default-500">
+                          {detail.run.progress.step || ""}
+                          {detail.run.progress.total > 0 ? ` · ${detail.run.progress.done}/${detail.run.progress.total}` : ""}
+                          {` · 请求 ${detail.run.progress.requests}`}
+                        </span>
+                      </div>
+                      <Progress className="mt-2" size="sm" value={detail.run.progress.total ? (detail.run.progress.done / detail.run.progress.total) * 100 : 0} />
+                    </div>
+                  )}
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                     <Progress size="sm" value={detail.run.total_cases ? (detail.run.done_cases / detail.run.total_cases) * 100 : 0} label={`进度 ${detail.run.done_cases}/${detail.run.total_cases} 项`} />
                     <details className="rounded-medium border border-default-200 px-3 py-2">
