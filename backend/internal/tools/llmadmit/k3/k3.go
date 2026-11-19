@@ -1,5 +1,5 @@
-// Package k3 实现《Kimi-K3 渠道三档测试准入标准 v1.0》。
-// 用例编号与标准文档一一对应：G 闸门 / F 功能 / M 中等 / S 压力。
+// Package k3 实现 Kimi-K3 渠道准入标准。
+// 用例按格式协议、性能基准、缓存分组；G/F/M 编号保留标准来源语义。
 package k3
 
 import (
@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,26 +16,69 @@ import (
 
 // 能力声明键：驱动豁免（§1.2）。
 const (
-	CapVideo     = "video"
-	CapImageURL  = "image_url"
-	CapWebSearch = "web_search"
+	CapVideo       = "video"
+	CapImageURL    = "image_url"
+	CapWebSearch   = "web_search"
+	CapOutput600K  = "max_output_600k"
+	CapOutput1024K = "max_output_1024k"
+	CapContext1M   = "context_1m"
 )
 
-// Suite 返回 K3 三档准入标准。
+// Group 给用例打分组标签（gate/format/cache/latency），驱动预设过滤。
+func group(cases []suite.Case, name string) []suite.Case {
+	for i := range cases {
+		if cases[i].Group != "" {
+			continue
+		}
+		if cases[i].Level == suite.LevelGate {
+			cases[i].Group = suite.GroupGate
+			continue
+		}
+		cases[i].Group = name
+	}
+	return cases
+}
+
+// Suite 返回 K3 准入标准：用例平铺，预设决定本次跑哪一组。
 func Suite() suite.Suite {
+	cases := make([]suite.Case, 0, 128)
+	cases = append(cases, group(fCases(), suite.GroupFormat)...)
+	cases = append(cases, group(mCases(), suite.GroupFormat)...)
+	cases = append(cases, bLoadCases()...)
+	// 执行顺序：闸门 → 格式 → 缓存 → 性能基准；基准最耗时放最后。
+	rank := func(c suite.Case) int {
+		switch c.Group {
+		case suite.GroupGate:
+			return 0
+		case suite.GroupFormat:
+			return 1
+		case suite.GroupCache:
+			return 2
+		case suite.GroupLatency:
+			return 3
+		}
+		return 4
+	}
+	sort.SliceStable(cases, func(i, j int) bool { return rank(cases[i]) < rank(cases[j]) })
 	return suite.Suite{
 		ID:           "k3-v1",
-		Name:         "Kimi-K3 渠道三档测试准入标准 v1.0",
+		Name:         "Kimi-K3 渠道准入标准 v1.3",
 		DefaultModel: "kimi-k3",
 		Capabilities: []suite.Capability{
 			{Key: CapVideo, Label: "视频理解（video_base64 / video_url）"},
 			{Key: CapImageURL, Label: "公网图片 URL（image_url）"},
 			{Key: CapWebSearch, Label: "联网搜索（web_search_options）"},
+			{Key: CapOutput600K, Label: "最大输出 600K tokens"},
+			{Key: CapOutput1024K, Label: "最大输出 1024K tokens（600K 通过后测试）"},
+			{Key: CapContext1M, Label: "1M 上下文（1024K）"},
 		},
-		Tiers: []suite.Tier{
-			// 两档结构：准入测试（功能+边界+基础缓存）→ 压力测试（延迟基准+容量压测）。
-			{ID: "准入", Name: "准入测试", Hint: "功能协议 + 边界 + 基础缓存 / 30–60 分钟", Cases: append(fCases(), append(mCases(), bCacheCases()...)...)},
-			{ID: "压测", Name: "压力测试", Hint: "延迟基准（8 梯度）+ 阶梯压测 / 1.5–3 小时", Cases: append(bLoadCases(), sCases()...)},
+		Cases: cases,
+		Presets: []suite.Preset{
+			{Key: suite.PresetAll, Label: "全部测试", Hint: "闸门 → 格式 → 缓存 → 性能基准，约 30–70 分钟"},
+			{Key: suite.PresetFormat, Label: "只测格式与协议", Hint: "功能、协议矩阵、边界与鉴权，约 15–30 分钟"},
+			{Key: suite.PresetCache, Label: "只测缓存", Hint: "缓存写入、多轮/后缀覆盖、5m TTL 曲线、1h 三协议格式，约 10–15 分钟"},
+			{Key: suite.PresetLatency, Label: "只测延迟与吞吐", Hint: "8 档语料基准：TTFT/TPOT/Tokens/s/缓存，约 15–25 分钟"},
+			{Key: suite.PresetVideo, Label: "只测视频相关", Hint: "闸门 + 视频红蓝对照、base64/URL 通道与可选体积上限"},
 		},
 	}
 }

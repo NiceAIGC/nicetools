@@ -33,7 +33,7 @@ WORKDIR /app
 COPY --from=backend /nicetools /app/nicetools
 COPY --from=frontend /build/dist /app/dist
 COPY src/tools/catalog.json /app/catalog.json
-ENV PORT=8080 DB_PATH=/app/data/nicetools.db STATIC_DIR=/app/dist TOOL_CATALOG=/app/catalog.json GIN_MODE=release
+ENV TZ=Asia/Shanghai PORT=8080 DB_PATH=/app/data/nicetools.db STATIC_DIR=/app/dist TOOL_CATALOG=/app/catalog.json GIN_MODE=release
 USER nicetools
 EXPOSE 8080
 VOLUME ["/app/data"]

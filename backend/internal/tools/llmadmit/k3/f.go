@@ -1,6 +1,7 @@
 package k3
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -79,10 +80,10 @@ func fCases() []suite.Case {
 				Expect:  "reasoning_tokens > 0 或 reasoning_content 非空。",
 				Ref:     "§2.1 思考锚点 / §4.1 F-07",
 			}},
-		{ID: "F-08", Name: "采样契约 ×4", Level: suite.LevelRecord, Run: f08Sampling,
+		{ID: "F-08", Name: "采样契约 ×6", Level: suite.LevelRecord, Run: f08Sampling,
 			Doc: suite.CaseDoc{
 				Purpose: "K3 官方固定采样参数，非固定值应 400；网关放行说明参数被静默吞掉（记录为 P2 不否决）。",
-				Method:  "temperature=1.0（应 200）；temperature=0.6 / top_p=0.8 / n=2（应各 400）。",
+				Method:  "官方固定值 temperature=1.0 / top_p=0.95 / n=1（应 200）；偏离值 temperature=0.6 / top_p=0.8 / n=2（应各 400）。",
 				Expect:  "与官方行为一致；放行记 P2。",
 				Ref:     "§2.1 采样契约 / §4.1 F-08",
 			}},
@@ -119,20 +120,33 @@ func fCases() []suite.Case {
 
 // G1：GET /v1/models → 200 且目标模型在列。
 func g1Models(c *suite.CaseCtx) suite.Outcome {
-	status, ids, err := c.Client.Models(c, c.Target)
-	if err != nil || status != 200 {
-		return fail(fmt.Sprintf("GET /models: HTTP %d %v", status, err), []suite.Defect{
-			{Level: "P0", Expect: "200", Actual: fmt.Sprintf("%d %v", status, err), Attribution: "gateway"},
-		})
+	r := c.Client.ModelsCall(c, c.Target)
+	e := ev("GET /models", map[string]any{}, r, 0)
+	if r.ErrKind != "" || r.HTTPStatus != 200 {
+		return fail(fmt.Sprintf("GET /models: HTTP %d %s", r.HTTPStatus, r.ErrMsg), []suite.Defect{
+			{Level: "P0", Expect: "200", Actual: fmt.Sprintf("%d %s", r.HTTPStatus, r.ErrMsg), Attribution: "gateway"},
+		}, e)
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(r.Raw), &parsed); err != nil {
+		return fail("models 响应解析失败", []suite.Defect{{Level: "P0", Expect: "合法 JSON", Actual: err.Error(), Attribution: "gateway"}}, e)
+	}
+	ids := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		ids = append(ids, m.ID)
 	}
 	for _, id := range ids {
-		if id == c.Target.Model {
-			return pass("目标模型在列", map[string]any{"models": ids})
+		if strings.EqualFold(id, c.Target.Model) {
+			return pass("目标模型在列（忽略大小写）", map[string]any{"models": ids}, e)
 		}
 	}
 	return fail("目标模型不在 /models 列表", []suite.Defect{
 		{Level: "P0", Expect: c.Target.Model, Actual: strings.Join(ids, ","), Attribution: "gateway"},
-	})
+	}, e)
 }
 
 // G2：探活 ×2，均须 200；quota 错误 → 中止（G3 合并判定）。
@@ -246,9 +260,17 @@ func f02Identity(c *suite.CaseCtx) suite.Outcome {
 }
 
 // F-03：非流式标准结构。
+// K3 的 reasoning 会占用 max_tokens；预算不足时 content 为空但结构本身正常。
+// 因此首轮给足预算，撞 length/空 content 时扩预算重试一次，避免把预算问题误判成结构损坏。
 func f03Structure(c *suite.CaseCtx) suite.Outcome {
-	r, retries := chat(c, map[string]any{"messages": userMsg("用一句话介绍你自己"), "max_tokens": 512})
-	evidence := []suite.Evidence{ev("非流式", map[string]any{"max_tokens": 64}, r, retries)}
+	body := map[string]any{"messages": userMsg("用一句话介绍你自己"), "max_tokens": 2048}
+	r, retries := chat(c, body)
+	evidence := []suite.Evidence{ev("非流式", body, r, retries)}
+	if r.HTTPStatus == 200 && (r.Content == "" || r.FinishReason == "length") {
+		body = map[string]any{"messages": userMsg("用一句话介绍你自己"), "max_tokens": 8192}
+		r, retries = chat(c, body)
+		evidence = append(evidence, ev("非流式（扩预算重试）", body, r, retries))
+	}
 	if r.HTTPStatus != 200 {
 		return fail(fmt.Sprintf("HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P1", Expect: "200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"}}, evidence...)
 	}
@@ -257,7 +279,11 @@ func f03Structure(c *suite.CaseCtx) suite.Outcome {
 			{Level: "P1", Expect: "object=chat.completion + content 非空 + finish_reason", Actual: truncate(r.Raw, 200), Attribution: "gateway"},
 		}, evidence...)
 	}
-	return pass("结构标准", map[string]any{"finish_reason": r.FinishReason}, evidence...)
+	completion := 0
+	if r.Usage != nil {
+		completion = r.Usage.CompletionTokens
+	}
+	return pass("结构标准", map[string]any{"finish_reason": r.FinishReason, "completion_tokens": completion}, evidence...)
 }
 
 // F-04：流式 SSE：首帧 data:，分片 ≥2，[DONE] 结束。
@@ -335,7 +361,8 @@ func f07ThinkingDefault(c *suite.CaseCtx) suite.Outcome {
 	}, evidence...)
 }
 
-// F-08：采样契约：temperature=1.0→200；0.6 / top_p=0.8 / n=2 → 400；放行记 P2。
+// F-08：采样契约：官方固定值 200，偏离值 400；放行记 P2。
+// 这是采样参数的唯一用例，M-53 不再重复 temperature/top_p/n。
 func f08Sampling(c *suite.CaseCtx) suite.Outcome {
 	probes := []struct {
 		label string
@@ -343,6 +370,8 @@ func f08Sampling(c *suite.CaseCtx) suite.Outcome {
 		want  int
 	}{
 		{"temperature=1.0", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "temperature": 1.0}, 200},
+		{"top_p=0.95", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "top_p": 0.95}, 200},
+		{"n=1", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "n": 1}, 200},
 		{"temperature=0.6", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "temperature": 0.6}, 400},
 		{"top_p=0.8", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "top_p": 0.8}, 400},
 		{"n=2", map[string]any{"messages": userMsg("a"), "max_tokens": 32, "n": 2}, 400},

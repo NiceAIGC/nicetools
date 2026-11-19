@@ -5,6 +5,7 @@ import {
   Card,
   CardBody,
   Chip,
+  Input,
   Select,
   SelectItem,
   Spinner,
@@ -27,7 +28,9 @@ interface SuiteCase {
   id: string;
   name: string;
   level: string;
+  group: string;
   capability?: string;
+  default_skip?: boolean;
   doc: { purpose: string; method: string; expect: string; ref: string };
 }
 
@@ -36,7 +39,7 @@ interface SuiteInfo {
   name: string;
   default_model: string;
   capabilities: { key: string; label: string }[];
-  tiers: { id: string; name: string; hint: string; cases: SuiteCase[] }[];
+  cases: SuiteCase[];
 }
 
 interface CaseCfg {
@@ -49,18 +52,22 @@ const listSuites = () => toolApi<SuiteInfo[]>(TOOL, "/suites");
 const listCaseCfg = () => toolApi<CaseCfg[]>(TOOL, "/config");
 const saveCaseCfg = (suite: string, cfgs: CaseCfg[]) => toolApi(TOOL, "/config", json("PUT", { suite, cfgs }));
 
-// 准入测试用例永久配置（管理员级默认）：级别改写 + 默认不测/豁免。
+// 准入测试用例永久配置（管理员级默认）：级别改写 + 默认测试/不测。
 // 任务创建时的自定义优先级高于这里（规范 §6 三层模型）。
 export default function AdmissionConfig() {
   const [suite, setSuite] = useState<SuiteInfo | null>(null);
   const [cfg, setCfg] = useState<Record<string, CaseCfg>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const [bulkLevel, setBulkLevel] = useState("");
 
   useEffect(() => {
     Promise.all([listSuites(), listCaseCfg()])
       .then(([suites, cfgs]) => {
         setSuite(suites[0] ?? null);
+        setSelected(new Set());
         const map: Record<string, CaseCfg> = {};
         for (const item of cfgs) {
           map[item.case_id] = { case_id: item.case_id, mode: item.mode, level: item.level };
@@ -78,6 +85,32 @@ export default function AdmissionConfig() {
     });
 
   const dirtyCount = Object.values(cfg).filter((c) => c.mode || c.level).length;
+
+  const bulkMode = (mode: CaseCfg["mode"]) => setCfg((prev) => {
+    const next = { ...prev };
+    for (const id of selected) {
+      const base = next[id] ?? { case_id: id, mode: "", level: "" };
+      next[id] = { ...base, mode };
+    }
+    return next;
+  });
+
+  const resetSelected = () => setCfg((prev) => {
+    const next = { ...prev };
+    for (const id of selected) delete next[id];
+    return next;
+  });
+
+  const applyBulkLevel = () => setCfg((prev) => {
+    const next = { ...prev };
+    for (const id of selected) {
+      const base = next[id] ?? { case_id: id, mode: "", level: "" };
+      next[id] = { ...base, level: bulkLevel as CaseCfg["level"] };
+    }
+    return next;
+  });
+
+  const allIDs = suite?.cases.map((c) => c.id) ?? [];
 
   const save = async () => {
     if (!suite) return;
@@ -107,29 +140,80 @@ export default function AdmissionConfig() {
           保存配置
         </Button>
       </div>
-      {suite.tiers.map((tier) => (
-        <Card key={tier.id} shadow="none" className="border border-default-200">
+      <div className="flex flex-wrap items-center gap-2 rounded-large border border-default-200 bg-default-50 px-3 py-2">
+        <Input size="sm" className="w-64" placeholder="搜索用例 ID / 名称 / 说明" value={query} onValueChange={setQuery} isClearable />
+        <Button size="sm" variant="flat" onPress={() => setSelected(new Set(allIDs))}>全选</Button>
+        <Button size="sm" variant="flat" onPress={() => setSelected(new Set())}>全不选</Button>
+        <Button size="sm" variant="flat" onPress={() => setSelected(new Set(allIDs.filter((id) => !selected.has(id))))}>反选</Button>
+        <span className="mx-1 h-5 w-px bg-default-200" />
+        <span className="text-xs text-default-500">已选 {selected.size} 项，批量：</span>
+        <Button size="sm" color="success" variant="flat" isDisabled={selected.size === 0} onPress={() => bulkMode("")}>启用</Button>
+        <Button size="sm" color="warning" variant="flat" isDisabled={selected.size === 0} onPress={() => bulkMode("skip")}>跳过</Button>
+        <Button size="sm" variant="light" isDisabled={selected.size === 0} onPress={resetSelected}>恢复默认</Button>
+        <span className="mx-1 h-5 w-px bg-default-200" />
+        <Select aria-label="批量级别" size="sm" className="w-32" selectedKeys={[bulkLevel || "default"]} onChange={(e) => setBulkLevel(e.target.value === "default" ? "" : e.target.value)}>
+          <SelectItem key="default">默认级别</SelectItem>
+          <SelectItem key="P0">P0 否决</SelectItem>
+          <SelectItem key="P1">P1 必过</SelectItem>
+          <SelectItem key="P2">P2 记录</SelectItem>
+          <SelectItem key="P3">P3 可选</SelectItem>
+        </Select>
+        <Button size="sm" variant="flat" isDisabled={selected.size === 0} onPress={applyBulkLevel}>应用级别</Button>
+      </div>
+      {[
+        ["gate", "前置闸门"],
+        ["format", "格式与协议"],
+        ["latency", "性能基准"],
+        ["cache", "缓存"],
+      ].map(([group, label]) => (
+        <Card key={group} shadow="none" className="border border-default-200">
           <CardBody className="gap-2">
-            <p className="text-sm font-semibold">{tier.name}</p>
-            <Table aria-label={tier.name} removeWrapper>
+            {(() => {
+              const groupCases = suite.cases.filter((c) => c.group === group).filter((c) => {
+                const q = query.trim().toLowerCase();
+                return !q || `${c.id} ${c.name} ${c.doc.purpose}`.toLowerCase().includes(q);
+              });
+              const groupIDs = new Set(groupCases.map((c) => c.id));
+              const groupSelected = new Set([...selected].filter((id) => groupIDs.has(id)));
+              return (
+                <>
+            <p className="text-sm font-semibold">{label}（{groupCases.length} 项）</p>
+            <div className="max-h-[60vh] overflow-x-auto overflow-y-auto">
+            <Table
+              aria-label={label}
+              removeWrapper
+              selectionMode="multiple"
+              selectedKeys={groupSelected}
+              onSelectionChange={(keys) => {
+                const next = new Set(selected);
+                for (const id of groupIDs) next.delete(id);
+                if (keys === "all") {
+                  for (const id of groupIDs) next.add(id);
+                } else {
+                  for (const key of keys) next.add(String(key));
+                }
+                setSelected(next);
+              }}
+            >
               <TableHeader>
                 <TableColumn>用例</TableColumn>
                 <TableColumn>说明</TableColumn>
                 <TableColumn className="w-36">级别</TableColumn>
-                <TableColumn className="w-44">启用 / 豁免</TableColumn>
+                <TableColumn className="w-28">测试</TableColumn>
               </TableHeader>
               <TableBody>
-                {tier.cases.map((cs) => {
+                {groupCases.map((cs) => {
                   const current = cfg[cs.id] ?? { case_id: cs.id, mode: "", level: "" };
                   return (
                     <TableRow key={cs.id}>
                       <TableCell className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-default-400">{tier.id}-{cs.id}</span>
+                          <span className="font-mono text-xs text-default-400">{cs.id}</span>
                           <span className="text-sm">{cs.name}</span>
                           {(cs.level === "P0" || cs.level === "P1") && (
                             <Chip size="sm" variant="bordered" color={cs.level === "P0" ? "danger" : "default"}>{cs.level}</Chip>
                           )}
+                          {cs.default_skip && <Chip size="sm" color="warning" variant="flat">默认跳过</Chip>}
                         </div>
                       </TableCell>
                       <TableCell className="max-w-md"><span className="line-clamp-2 text-xs text-default-400">{cs.doc.purpose}</span></TableCell>
@@ -148,32 +232,24 @@ export default function AdmissionConfig() {
                         </Select>
                       </TableCell>
                       <TableCell>
-                        {/* 关闭即永久不测（mode=skip）；豁免只在启用时有意义 */}
-                        <div className="flex items-center gap-4">
-                          <Switch
-                            aria-label={`${cs.name} 启用`}
-                            size="sm"
-                            isSelected={current.mode !== "skip"}
-                            onValueChange={(on) => update(cs.id, { mode: on ? (current.mode === "skip" ? "" : current.mode) : "skip" })}
-                          >
-                            启用
-                          </Switch>
-                          <Switch
-                            aria-label={`${cs.name} 豁免`}
-                            size="sm"
-                            isDisabled={current.mode === "skip"}
-                            isSelected={current.mode === "exempt"}
-                            onValueChange={(on) => update(cs.id, { mode: on ? "exempt" : "" })}
-                          >
-                            豁免
-                          </Switch>
-                        </div>
+                        <Switch
+                          aria-label={`${cs.name} 测试`}
+                          size="sm"
+                          isSelected={current.mode !== "skip"}
+                          onValueChange={(on) => update(cs.id, { mode: on ? "" : "skip" })}
+                        >
+                          测试
+                        </Switch>
                       </TableCell>
                     </TableRow>
                   );
                 })}
               </TableBody>
             </Table>
+            </div>
+                </>
+              );
+            })()}
           </CardBody>
         </Card>
       ))}

@@ -3,8 +3,11 @@
 package llmadmit
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -31,7 +34,10 @@ func New() *Module { return &Module{} }
 func (m *Module) ID() string { return "llm-admission" }
 
 func (m *Module) Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{})
+	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}); err != nil {
+		return err
+	}
+	return backfillPrimaryDomains(db)
 }
 
 func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
@@ -44,8 +50,11 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 
 	read.GET("/suites", m.suites)
 	read.GET("/runs", m.runs)
+	read.GET("/runs/domains", m.runDomains)
 	read.GET("/runs/:rid", m.runDetail)
+	read.GET("/runs/:rid/cases/:cid/evidence", m.caseEvidence)
 	read.GET("/runs/:rid/export", m.export)
+	read.GET("/runs/:rid/export/failed", m.exportFailedEvidence)
 	read.GET("/export/merged", m.exportMerged)
 	read.GET("/config", m.getConfig)
 	write.PUT("/config", m.putConfig)
@@ -111,11 +120,9 @@ func (m *Module) putConfig(c *gin.Context) {
 		module.Fail(c, service.Problem(400, "测试标准不存在"))
 		return
 	}
-	validIDs := map[string]bool{}
-	for _, t := range chosen.Tiers {
-		for _, cs := range t.Cases {
-			validIDs[cs.ID] = true
-		}
+	validIDs := make(map[string]bool, len(chosen.Cases))
+	for _, cs := range chosen.Cases {
+		validIDs[cs.ID] = true
 	}
 	validLevel := map[string]bool{"": true, "P0": true, "P1": true, "P2": true, "P3": true}
 	for _, cfg := range input.Cfgs {
@@ -171,7 +178,38 @@ func (m *Module) media(c *gin.Context) {
 		c.AbortWithStatusJSON(404, gin.H{"error": "媒体不存在"})
 		return
 	}
+	if raw := c.Query("size"); raw != "" {
+		size, err := strconv.Atoi(raw)
+		if err != nil || size < len(data) || size > 100<<20 {
+			c.AbortWithStatusJSON(400, gin.H{"error": "size 非法（须为不小于原视频且不超过 100 MiB 的字节数）"})
+			return
+		}
+		c.Header("Content-Type", "video/mp4")
+		c.Header("Content-Length", strconv.Itoa(size))
+		c.Status(200)
+		_, _ = c.Writer.Write(data)
+		padLen := size - len(data)
+		if padLen >= 8 {
+			box := make([]byte, 8)
+			binary.BigEndian.PutUint32(box, uint32(padLen))
+			copy(box[4:], "free")
+			_, _ = c.Writer.Write(box)
+			_, _ = io.CopyN(c.Writer, zeroReader{}, int64(padLen-8))
+		} else if padLen > 0 {
+			_, _ = io.CopyN(c.Writer, zeroReader{}, int64(padLen))
+		}
+		return
+	}
 	c.Data(200, "video/mp4", data)
+}
+
+func (m *Module) runDomains(c *gin.Context) {
+	groups, err := m.runsByDomain()
+	if err != nil {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"groups": groups})
 }
 
 func (m *Module) runs(c *gin.Context) {
@@ -183,6 +221,7 @@ func (m *Module) runs(c *gin.Context) {
 	if list == nil {
 		list = []Run{}
 	}
+	m.annotateRuns(list)
 	c.JSON(200, list)
 }
 
@@ -209,7 +248,25 @@ func (m *Module) runDetail(c *gin.Context) {
 	for i := range rows {
 		rows[i].Evidence = ""
 	}
+
+	// annotateRuns 修改的是切片元素，单独给当前 run 打分。
+	scoreRun(&run, rows)
 	c.JSON(200, gin.H{"run": run, "cases": rows})
+}
+
+func normalizeBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if !strings.HasSuffix(strings.ToLower(path), "/v1") {
+		path += "/v1"
+	}
+	u.Path = path
+	u.RawPath = ""
+	return strings.TrimSuffix(u.String(), "/")
 }
 
 type createInput struct {
@@ -218,9 +275,10 @@ type createInput struct {
 	Model        string            `json:"model"`
 	Channel      string            `json:"channel"`
 	Suite        string            `json:"suite"`
-	Tier         string            `json:"tier"`
+	Preset       string            `json:"preset"`
 	Declarations map[string]bool   `json:"declarations"`
 	Overrides    map[string]string `json:"case_overrides"`
+	CaseIDs      []string          `json:"case_ids"`
 }
 
 func (m *Module) create(c *gin.Context) {
@@ -229,7 +287,7 @@ func (m *Module) create(c *gin.Context) {
 		module.Fail(c, service.Problem(400, "请求 JSON 无效"))
 		return
 	}
-	input.BaseURL = strings.TrimSuffix(strings.TrimSpace(input.BaseURL), "/")
+	input.BaseURL = normalizeBaseURL(input.BaseURL)
 	u, err := url.Parse(input.BaseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		module.Fail(c, service.Problem(400, "网关地址须为 http(s) URL"))
@@ -259,6 +317,11 @@ func (m *Module) create(c *gin.Context) {
 		return
 	}
 	input.Channel = strings.TrimSpace(input.Channel)
+	preset, ok := suite.ParseGroup(input.Preset)
+	if !ok {
+		module.Fail(c, service.Problem(400, "预设仅支持 format/cache/latency 或留空全测"))
+		return
+	}
 	// 只接受套件声明过的能力键，忽略前端夹带。
 	declarations := map[string]bool{}
 	for _, cap := range chosen.Capabilities {
@@ -268,7 +331,7 @@ func (m *Module) create(c *gin.Context) {
 	if user := module.CurrentUser(c); user != nil {
 		actor = user.Username
 	}
-	run, err := m.runner.Start(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, input.Tier, input.Channel, declarations, input.Overrides)
+	run, err := m.runner.StartWithCases(actor, chosen, suite.Target{BaseURL: input.BaseURL, APIKey: input.APIKey, Model: input.Model}, preset, input.Channel, declarations, input.Overrides, input.CaseIDs)
 	if err != nil {
 		module.Fail(c, err)
 		return
@@ -303,7 +366,7 @@ func (m *Module) abort(c *gin.Context) {
 }
 
 // export 导出报告：type=full|masked，format=json|md，channel 可覆盖渠道名；
-// 两版都带 niceaigc 水印。
+// 水印默认开启，watermark=0 可关闭。
 func (m *Module) export(c *gin.Context) {
 	run, ok := m.findRun(c)
 	if !ok {
@@ -334,6 +397,10 @@ func (m *Module) exportMerged(c *gin.Context) {
 		module.Fail(c, service.Problem(404, "部分任务不存在"))
 		return
 	}
+	if !sameMergeTarget(runs) {
+		module.Fail(c, service.Problem(400, "合并导出仅支持同一渠道、网关和模型的任务"))
+		return
+	}
 	rowsByID := map[string][]CaseResult{}
 	for _, run := range runs {
 		var rows []CaseResult
@@ -345,6 +412,20 @@ func (m *Module) exportMerged(c *gin.Context) {
 	}
 	rep := m.buildMergedReport(runs, rowsByID, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
 	m.respondReport(c, rep, "llmadmit-merged")
+}
+
+// sameMergeTarget 禁止跨渠道/网关/模型/标准合并，以免合并报告把不同被测目标混成一个结果。
+func sameMergeTarget(runs []Run) bool {
+	if len(runs) < 2 {
+		return true
+	}
+	first := runs[0]
+	for _, run := range runs[1:] {
+		if run.Suite != first.Suite || run.BaseURL != first.BaseURL || run.Model != first.Model || run.Channel != first.Channel {
+			return false
+		}
+	}
+	return true
 }
 
 // exportName 清洗自定义导出名：仅保留中英文、数字、.-_，按字符截断。
@@ -363,6 +444,9 @@ func exportName(raw string) string {
 }
 
 func (m *Module) respondReport(c *gin.Context, rep report, base string) {
+	if !watermarkEnabled(c) {
+		rep.Watermark = ""
+	}
 	kind := "full"
 	if rep.Masked {
 		kind = "masked"
@@ -397,5 +481,23 @@ func (m *Module) respondReport(c *gin.Context, rep report, base string) {
 	}
 }
 
+// watermarkEnabled 判断本次导出是否带水印；默认开启，兼容 0/false/off。
+func watermarkEnabled(c *gin.Context) bool {
+	switch strings.ToLower(c.DefaultQuery("watermark", "1")) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
 // 编译期契约校验。
 var _ module.Module = (*Module)(nil)
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}

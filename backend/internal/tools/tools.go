@@ -5,9 +5,10 @@ package tools
 import (
 	"nicetools/backend/internal/module"
 	"nicetools/backend/internal/tools/llmadmit"
+	"nicetools/backend/internal/tools/llmconnectivity"
 )
 
 // All 返回全部工具后端模块，启动时装配。
 func All() []module.Module {
-	return []module.Module{llmadmit.New()}
+	return []module.Module{llmadmit.New(), llmconnectivity.New()}
 }

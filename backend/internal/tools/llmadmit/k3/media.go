@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/base64"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
@@ -23,6 +24,25 @@ func BlueMP4() []byte { return blueMP4 }
 
 func videoDataURI(data []byte) string {
 	return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// PadMP4 在 MP4 末尾追加合法 free box 到指定字节数；解码器会忽略 free box。
+func PadMP4(data []byte, size int) []byte {
+	if size <= len(data) {
+		return data
+	}
+	freeLen := size - len(data)
+	if freeLen < 8 {
+		freeLen = 8
+	}
+	box := make([]byte, 8)
+	binary.BigEndian.PutUint32(box, uint32(freeLen))
+	copy(box[4:], "free")
+	out := make([]byte, 0, len(data)+freeLen)
+	out = append(out, data...)
+	out = append(out, box...)
+	out = append(out, make([]byte, freeLen-8)...)
+	return out
 }
 
 // colorPNG 生成四色象限 PNG（F-10：左上红/右上绿/左下蓝/右下黄）。
@@ -62,24 +82,24 @@ func sixColorPNG() string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// imageMsg 构造 文本 + base64 图片 的多模态 user 消息。
+// imageMsg 构造 图片 + 文本 的多模态 user 消息（与官方/网关实测顺序一致）。
 func imageMsg(text, dataURI string) []any {
 	return []any{map[string]any{
 		"role": "user",
 		"content": []any{
-			map[string]any{"type": "text", "text": text},
 			map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURI}},
+			map[string]any{"type": "text", "text": text},
 		},
 	}}
 }
 
-// videoMsg 构造 文本 + base64 视频 的多模态 user 消息。
+// videoMsg 构造 视频 + 文本 的多模态 user 消息（与官方/网关实测顺序一致）。
 func videoMsg(text, dataURI string) []any {
 	return []any{map[string]any{
 		"role": "user",
 		"content": []any{
-			map[string]any{"type": "text", "text": text},
 			map[string]any{"type": "video_url", "video_url": map[string]any{"url": dataURI}},
+			map[string]any{"type": "text", "text": text},
 		},
 	}}
 }

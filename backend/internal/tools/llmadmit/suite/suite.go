@@ -1,4 +1,4 @@
-// Package suite 定义准入测试套件的抽象：档位、用例、判据结果与执行上下文。
+// Package suite 定义准入测试套件的抽象：用例、分组预设、判据结果与执行上下文。
 // 一个新标准（模型/渠道）= 一个实现 Suite 的包，在 llmadmit 注册表加一行。
 package suite
 
@@ -86,24 +86,57 @@ type CaseDoc struct {
 	Ref     string `json:"ref"`     // 规范出处，如 §4.1
 }
 
-// Case 是一个准入用例。Run 只在 Declared 豁免判断之后被调用。
-type Case struct {
-	ID    string `json:"id"`   // F-01 / M-38 / S-T1
-	Name  string `json:"name"` // 用例名
-	Level Level  `json:"level"`
-	// Capability 非空时，未声明支持该能力 → 豁免。
-	Capability string                   `json:"capability,omitempty"`
-	Doc        CaseDoc                  `json:"doc"`
-	Run        func(c *CaseCtx) Outcome `json:"-"`
+// 用例分组：驱动「只测延迟 / 只测缓存 / 只测格式参数 / 全测」快捷开关。
+const (
+	GroupGate    = "gate"    // 前置闸门：任何预设都必须先跑
+	GroupFormat  = "format"  // 功能与协议格式
+	GroupCache   = "cache"   // 缓存命中、TTL、覆盖率
+	GroupLatency = "latency" // 性能基准（分位数/吞吐）
+)
+
+// Group 是测试预设：空字符串表示全测。
+type Group string
+
+const (
+	PresetAll     Group = ""        // 全测：格式 + 缓存 + 延迟
+	PresetFormat  Group = "format"  // 只测格式与协议
+	PresetCache   Group = "cache"   // 只测缓存
+	PresetLatency Group = "latency" // 只测延迟与吞吐
+	PresetVideo   Group = "video"   // 只测视频相关能力（闸门恒包含）
+)
+
+// ParseGroup 校验并归一化预设取值。
+func ParseGroup(raw string) (Group, bool) {
+	switch Group(raw) {
+	case PresetAll, PresetFormat, PresetCache, PresetLatency, PresetVideo:
+		return Group(raw), true
+	default:
+		return PresetAll, false
+	}
 }
 
-// Tier 是一个档位。
-type Tier struct {
-	ID    string `json:"id"` // F / M / S
-	Name  string `json:"name"`
-	Cases []Case `json:"cases"`
-	// 给前端的档位说明（请求量级/token 预算/耗时）。
-	Hint string `json:"hint"`
+// Includes 判断某分组的用例是否属于该预设；全测包含一切，闸门恒包含。
+func (g Group) Includes(group string) bool {
+	if g == PresetAll || group == GroupGate {
+		return true
+	}
+	return group == string(g)
+}
+
+// Case 是一个准入用例。Run 只在能力豁免判断之后被调用。
+type Case struct {
+	ID    string `json:"id"`   // F-01 / M-38 / B-4K
+	Name  string `json:"name"` // 用例名
+	Level Level  `json:"level"`
+	// Group 是用例分组（gate/format/cache/latency），驱动预设过滤。
+	Group string `json:"group"`
+	// Capability 非空时，未声明支持该能力 → 豁免。
+	Capability string `json:"capability,omitempty"`
+	// DefaultSkip 是前端任务创建时的默认不勾选标记（可选/昂贵用例），
+	// 不影响直接调用 API 或管理员永久配置。
+	DefaultSkip bool                     `json:"default_skip,omitempty"`
+	Doc         CaseDoc                  `json:"doc"`
+	Run         func(c *CaseCtx) Outcome `json:"-"`
 }
 
 // Capability 是可在测试前声明的能力，驱动用例豁免（§1.2）。
@@ -112,13 +145,62 @@ type Capability struct {
 	Label string `json:"label"`
 }
 
-// Suite 是一套准入标准。
+// Preset 是前端可选的测试范围快捷开关。
+type Preset struct {
+	Key   Group  `json:"key"`
+	Label string `json:"label"`
+	Hint  string `json:"hint"`
+}
+
+// Suite 是一套准入标准：用例平铺，由 Group + Preset 决定本次跑哪一组。
 type Suite struct {
 	ID           string       `json:"id"`
 	Name         string       `json:"name"`
 	DefaultModel string       `json:"default_model"`
 	Capabilities []Capability `json:"capabilities"`
-	Tiers        []Tier       `json:"tiers"`
+	Cases        []Case       `json:"cases"`
+	Presets      []Preset     `json:"presets"`
+}
+
+// Select 返回预设命中的用例（保持声明顺序）；全测预设返回全部。
+func (s Suite) Select(preset Group) []Case {
+	out := make([]Case, 0, len(s.Cases))
+	for _, c := range s.Cases {
+		// 视频预设不是 group，而是 capability=video 的横切范围。
+		if preset == PresetVideo {
+			if c.Group == GroupGate || c.Capability == "video" {
+				out = append(out, c)
+			}
+			continue
+		}
+		if preset.Includes(c.Group) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// SelectIDs 返回显式选择的用例，保持声明顺序；前置闸门始终补入。
+// 返回 false 表示存在套件中不存在的 ID。
+func (s Suite) SelectIDs(ids []string) ([]Case, bool) {
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	known := make(map[string]bool, len(s.Cases))
+	out := make([]Case, 0, len(ids)+2)
+	for _, c := range s.Cases {
+		known[c.ID] = true
+		if wanted[c.ID] || c.Group == GroupGate {
+			out = append(out, c)
+		}
+	}
+	for id := range wanted {
+		if !known[id] {
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // 供长请求使用的超时分级（§8.3）。

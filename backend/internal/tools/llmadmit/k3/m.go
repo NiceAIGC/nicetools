@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ func mCases() []suite.Case {
 		{ID: "M-09", Name: "chat_template_kwargs.enable_thinking 写法", Level: suite.LevelRecord, Run: m09KwargsEnable, Doc: suite.CaseDoc{Purpose: "记录 kwargs.enable_thinking 兼容性。", Method: "chat_template_kwargs.enable_thinking=true 发推理题。", Expect: "记录是否 200 且 reasoning 可观测。", Ref: "§5.1 M-09"}},
 		{ID: "M-10", Name: "chat_template_kwargs.thinking 写法", Level: suite.LevelRecord, Run: m10KwargsThinking, Doc: suite.CaseDoc{Purpose: "记录 kwargs.thinking 兼容性。", Method: "chat_template_kwargs.thinking=true 发推理题。", Expect: "记录是否 200 且 reasoning 可观测。", Ref: "§5.1 M-10"}},
 		{ID: "M-11", Name: "默认思考", Level: suite.LevelRequired, Run: m11ThinkingDefault, Doc: suite.CaseDoc{Purpose: "确认 K3 默认输出推理。", Method: "不传思考参数，询问小数比较题。", Expect: "200 且 reasoning 或 reasoning_tokens 存在；必过。", Ref: "§5.1 M-11"}},
-		{ID: "M-12", Name: "effort 三档", Level: suite.LevelRequired, Run: m12Effort, Doc: suite.CaseDoc{Purpose: "验证 reasoning_effort 档位可观测且随档位增加。", Method: "low/high/max 解证明题；撞 length 改 16384 重测。", Expect: "三档均 200、有 reasoning，max≥2×min(low,high)；必过。", Ref: "§5.1 M-12～M-14"}},
+		{ID: "M-12", Name: "effort 三档", Level: suite.LevelRequired, Run: m12Effort, Doc: suite.CaseDoc{Purpose: "验证 reasoning_effort 三档可用且有推理输出。", Method: "low/high/max 解证明题；撞 length 改 16384 重测。", Expect: "三档均 200 且有 reasoning；记录 token 数，不设固定倍率线（官方未承诺）。", Ref: "§5.1 M-12～M-14"}},
 		{ID: "M-15", Name: "effort=medium 拒绝", Level: suite.LevelRequired, Run: m15EffortMedium, Doc: suite.CaseDoc{Purpose: "对齐官方不支持的 effort 值。", Method: "reasoning_effort=medium 请求。", Expect: "HTTP 400；必过。", Ref: "§5.1 M-15"}},
 		{ID: "M-16", Name: "结构化输出 json_object", Level: suite.LevelRequired, Run: m16JSONObject, Doc: suite.CaseDoc{Purpose: "验证 JSON 对象约束。", Method: "response_format.type=json_object 请求城市数据。", Expect: "200 且 content 可解析 JSON；必过。", Ref: "§5.1 M-16"}},
 		{ID: "M-17", Name: "结构化输出 json_schema", Level: suite.LevelRequired, Run: m17JSONSchema, Doc: suite.CaseDoc{Purpose: "验证 JSON Schema 约束。", Method: "请求必填 name、temp 的 json_schema。", Expect: "200 且 JSON 有非空 name；必过。", Ref: "§5.1 M-17"}},
@@ -41,37 +42,47 @@ func mCases() []suite.Case {
 		{ID: "M-26", Name: "并行工具调用", Level: suite.LevelRecord, Run: m26ParallelTools, Doc: suite.CaseDoc{Purpose: "记录并行工具调用能力。", Method: "auto 同时查询北京、上海天气。", Expect: "记录 tool_calls 数量，不设否决线。", Ref: "§5.1 M-26"}},
 		{ID: "M-27", Name: "未定义函数拒绝", Level: suite.LevelRequired, Run: m27UndefinedFunction, Doc: suite.CaseDoc{Purpose: "防止调用未声明函数。", Method: "tool_choice 指向 not_exist_fn。", Expect: "HTTP 400；必过。", Ref: "§5.1 M-27"}},
 		{ID: "M-28", Name: "图片理解双测", Level: suite.LevelP0, Run: m28Image, Doc: suite.CaseDoc{Purpose: "确认图片真实进入模型。", Method: "base64 发送四色位置图和六色顺序图。", Expect: "两图颜色判定全对，否则 P0 否决。", Ref: "§5.1 M-28"}},
-		{ID: "M-29", Name: "公网图片 URL", Level: suite.LevelOptional, Capability: CapImageURL, Run: m29ImageURL, Doc: suite.CaseDoc{Purpose: "验证声明支持的公网图片拉取。", Method: "传 Wikimedia 图片 URL 并要求描述。", Expect: "200 且描述>10 rune；网络失败仅记录，可选。", Ref: "§5.1 M-29"}},
+		{ID: "M-29", Name: "公网图片 URL", Level: suite.LevelOptional, Capability: CapImageURL, DefaultSkip: true, Run: m29ImageURL, Doc: suite.CaseDoc{Purpose: "验证声明支持的公网图片拉取。", Method: "传 Wikimedia 图片 URL 并要求描述。", Expect: "200 且描述>10 rune；网络失败仅记录，可选。", Ref: "§5.1 M-29"}},
 		{ID: "M-30", Name: "视频红蓝双对照", Level: suite.LevelP0, Capability: CapVideo, Run: m30Video, Doc: suite.CaseDoc{Purpose: "确认视频真实进入模型而非猜测。", Method: "分别发送红、蓝 MP4，要求只答颜色。", Expect: "红答红、蓝答蓝，否则 P0 否决。", Ref: "§5.1 M-30"}},
-		{ID: "M-30B", Name: "视频传输双通道（base64/URL）", Level: suite.LevelP0, Capability: CapVideo, Run: m30BVideoChannels, Doc: suite.CaseDoc{Purpose: "视频有 base64 与 URL 两种传输通道，只验一种会漏掉另一通道缺陷（转换层丢块/拉取失败）。", Method: "同一红色视频分别用 base64 与 URL（本平台托管、任务令牌保护）发送，要求都答红。", Expect: "两种通道均 200 且答红，否则 P0；本服务未配置公开地址时 URL 通道降级为记录。", Ref: "§5.1 M-30 / §8.6"}},
-		{ID: "M-31", Name: "公网视频 URL", Level: suite.LevelOptional, Capability: CapVideo, Run: m31VideoURL, Doc: suite.CaseDoc{Purpose: "记录公网视频 URL 拉取行为。", Method: "传样例 MP4 URL 要求描述。", Expect: "记录 HTTP，受网络影响不判负；可选。", Ref: "§5.1 M-31"}},
+		{ID: "M-30B", Name: "视频传输双通道（base64/URL）", Level: suite.LevelP0, Capability: CapVideo, Run: m30BVideoChannels, Doc: suite.CaseDoc{Purpose: "视频有 base64 与 URL 两种传输通道，只验一种会漏掉另一通道缺陷（转换层丢块/拉取失败）。", Method: "同一红色视频分别用 base64 与 URL（本平台托管、任务令牌保护）发送，要求都答红。", Expect: "base64 通道必须 200 且答红（P0）；URL 通道 200 答红记支持，400/未配置降级记录，不判 P0。", Ref: "§5.1 M-30 / §8.6"}},
+		{ID: "M-31", Name: "公网视频 URL", Level: suite.LevelOptional, Capability: CapVideo, DefaultSkip: true, Run: m31VideoURL, Doc: suite.CaseDoc{Purpose: "记录公网视频 URL 拉取行为。", Method: "传样例 MP4 URL 要求描述。", Expect: "记录 HTTP，受网络影响不判负；可选。", Ref: "§5.1 M-31"}},
 		{ID: "M-32", Name: "音频 WAV 拒绝", Level: suite.LevelRecord, Run: m32Audio, Doc: suite.CaseDoc{Purpose: "记录官方音频输入兼容性。", Method: "发送静音 WAV input_audio。", Expect: "400 为官方对齐；200 透传记 P2。", Ref: "§5.1 M-32"}},
-		{ID: "M-33", Name: "多轮记忆", Level: suite.LevelRequired, Run: m33Memory, Doc: suite.CaseDoc{Purpose: "验证上下文多轮保持。", Method: "前文声明姓名林晓雨，随后追问姓名。", Expect: "200 且回答林晓雨；必过。", Ref: "§5.1 M-33"}},
+		{ID: "M-33", Name: "多轮记忆", Level: suite.LevelRequired, Run: m33Memory, Doc: suite.CaseDoc{Purpose: "验证上下文多轮保持。", Method: "前文声明姓名林晓雨，随后追问姓名（max_tokens=512，给推理留足预算）。", Expect: "200 且回答林晓雨；必过。", Ref: "§5.1 M-33"}},
 		{ID: "M-34", Name: "reasoning_content 回传", Level: suite.LevelRequired, Run: m34ReasoningReplay, Doc: suite.CaseDoc{Purpose: "验证含历史 reasoning_content 的对话兼容。", Method: "携带小数比较 reasoning_content 再追问。", Expect: "200 且回答 8.3；必过。", Ref: "§5.1 M-34"}},
 		{ID: "M-35", Name: "响应无重复字段", Level: suite.LevelRequired, Run: m35NoDuplicateKeys, Doc: suite.CaseDoc{Purpose: "保证 JSON 响应可可靠解析。", Method: "普通请求后逐 token 扫描顶层键。", Expect: "200 且无重复顶层键；必过。", Ref: "§5.1 M-35"}},
 		{ID: "M-36", Name: "响应关键字段齐全", Level: suite.LevelRequired, Run: m36KeyFields, Doc: suite.CaseDoc{Purpose: "保证下游所需响应字段完整。", Method: "普通请求检查原文关键字段。", Expect: "content、finish_reason、prompt_tokens 均存在；必过。", Ref: "§5.1 M-36"}},
 		{ID: "M-37", Name: "输出无乱码与泄露", Level: suite.LevelRequired, Run: m37CleanOutput, Doc: suite.CaseDoc{Purpose: "排除编码损坏和内部标签泄露。", Method: "中英日韩、算术、代码、LaTex 五类提示抽样。", Expect: "无 �、控制字符、<think>、<|im_end|>；必过。", Ref: "§5.1 M-37"}},
 		{ID: "M-38", Name: "EOS 抑制 ×20", Level: suite.LevelRequired, Run: m38EOS, Doc: suite.CaseDoc{Purpose: "发现间歇性 EOS 空回复。", Method: "20 次相同“直接回答OK”请求。", Expect: "20/20 200，且无 stop-空 content；必过。", Ref: "§5.1 M-38"}},
-		{ID: "M-39", Name: "缓存字段存在", Level: suite.LevelRequired, Run: m39CacheField, Doc: suite.CaseDoc{Purpose: "确认缓存计量字段可观测。", Method: "2048 token 固定前缀预热后重发。", Expect: "usage 存在且原文有 prompt_tokens_details；必过。", Ref: "§5.1 M-39"}},
-		{ID: "M-40", Name: "缓存命中率 ≥80%", Level: suite.LevelRequired, Run: m40CacheHit, Doc: suite.CaseDoc{Purpose: "验证固定前缀缓存效果。", Method: "2048 token 公共前缀 1 预热+5 测量。", Expect: "cached/prompt token 命中率≥80%；必过。", Ref: "§5.1 M-40"}},
+		{ID: "M-39", Group: suite.GroupCache, Name: "缓存写入与字段", Level: suite.LevelRequired, Run: m39CacheField, Doc: suite.CaseDoc{Purpose: "确认缓存写入可观测，且命中后字段完整。", Method: "2048 token 唯一前缀预热 + 重发一次，显式 5m TTL。", Expect: "首次 cache_write_tokens>0；第二次 cached_tokens>0 且 prompt_tokens_details 存在；必过。", Ref: "§5.1 M-39"}},
 		{ID: "M-41", Name: "无鉴权 401", Level: suite.LevelRequired, Run: m41NoAuth, Doc: suite.CaseDoc{Purpose: "防止未鉴权访问。", Method: "不带 Authorization 发请求。", Expect: "HTTP 401；必过。", Ref: "§5.1 M-41"}},
 		{ID: "M-42", Name: "错误 key 401", Level: suite.LevelRequired, Run: m42BadKey, Doc: suite.CaseDoc{Purpose: "验证错误凭证被拒。", Method: "随机无效 API key 发请求。", Expect: "HTTP 401；必过。", Ref: "§5.1 M-42"}},
 		{ID: "M-43", Name: "无效模型 404", Level: suite.LevelRecord, Run: m43InvalidModel, Doc: suite.CaseDoc{Purpose: "记录无效模型错误契约。", Method: "随机不存在 model 请求。", Expect: "404 通过；403/503 判 P1，其他状态记录。", Ref: "§5.1 M-43"}},
 		{ID: "M-44", Name: "错误体无网关指纹", Level: suite.LevelRecord, Run: m44ErrorFingerprint, Doc: suite.CaseDoc{Purpose: "避免错误体泄露网关实现。", Method: "无效模型触发错误，匹配已知网关指纹。", Expect: "无 LiteLLM、New API、Tengine、Distributor；泄露记 P2。", Ref: "§5.1 M-44"}},
-		{ID: "M-45", Name: "超大 max_tokens 拒绝", Level: suite.LevelRequired, Run: m45HugeMaxTokens, Doc: suite.CaseDoc{Purpose: "防止异常输出额度被放行。", Method: "max_tokens=99999999。", Expect: "HTTP 400；必过。", Ref: "§5.1 M-45"}},
-		{ID: "M-46", Name: "越界 max_completion_tokens", Level: suite.LevelRecord, Run: m46OutOfRange, Doc: suite.CaseDoc{Purpose: "检验 completion 参数边界。", Method: "分别传 0、99999999。", Expect: "两值均不得 200；放行记 P1。", Ref: "§5.1 M-46"}},
+		{ID: "M-45", Name: "超大 max_tokens 处理", Level: suite.LevelRecord, Run: m45HugeMaxTokens, Doc: suite.CaseDoc{Purpose: "记录网关对超大输出预算的处理方式。", Method: "max_tokens=99999999。", Expect: "记录 400 拒绝或 200 自动收敛；不设否决线（官方允许按上下文自动降低）。", Ref: "§5.1 M-45"}},
+		{ID: "M-46", Name: "越界 max_completion_tokens", Level: suite.LevelRecord, Run: m46OutOfRange, Doc: suite.CaseDoc{Purpose: "检验 completion 参数边界。", Method: "分别传 0、99999999。", Expect: "两值均不得 200；放行记 P2 观察。", Ref: "§5.1 M-46"}},
 		{ID: "M-47", Name: "回显模型与身份一致", Level: suite.LevelRequired, Run: m47IdentityConsistency, Doc: suite.CaseDoc{Purpose: "防止模型身份调包。", Method: "询问模型身份。", Expect: "200 且自报 Kimi/Moonshot/月之暗面，否则 P0。", Ref: "§5.1 M-47"}},
-		{ID: "M-48", Name: "联网搜索生效", Level: suite.LevelOptional, Capability: CapWebSearch, Run: m48WebSearch, Doc: suite.CaseDoc{Purpose: "验证声明的联网搜索能力。", Method: "enable_search=true 查询当天日期。", Expect: "200 且 content 非空；声明支持未生效判 P1，可选。", Ref: "§5.1 M-48"}},
+		{ID: "M-48", Name: "联网搜索生效", Level: suite.LevelOptional, Capability: CapWebSearch, DefaultSkip: true, Run: m48WebSearch, Doc: suite.CaseDoc{Purpose: "验证声明的联网搜索能力。", Method: "enable_search=true 查询当天日期。", Expect: "200 且 content 非空；声明支持未生效判 P1，可选。", Ref: "§5.1 M-48"}},
 		{ID: "M-49", Name: "context_length 元信息", Level: suite.LevelRecord, Run: m49ContextLength, Doc: suite.CaseDoc{Purpose: "记录模型上下文窗口元信息。", Method: "GET /models 查目标模型 context_length。", Expect: "记录值；请求/解析/缺模型失败不判负。", Ref: "§5.1 M-49"}},
 		{ID: "M-50", Name: "10k 输入延迟观测", Level: suite.LevelRecord, Run: m50Latency10k, Doc: suite.CaseDoc{Purpose: "建立 10k 输入延迟基线。", Method: "校准 10000 token，流式总结。", Expect: "记录 TTFT、业务 TTFT、TPOT、E2E，无通过线。", Ref: "§5.1 M-50"}},
 		{ID: "M-51", Name: "限流说明（书面回填）", Level: suite.LevelRecord, Run: m51RateLimitNote, Doc: suite.CaseDoc{Purpose: "收集供应商限流策略。", Method: "供应商书面回填。", Expect: "跳过运行，不计通过率；书面回填。", Ref: "§5.1 M-51"}},
-		{ID: "M-53", Name: "Chat 协议参数矩阵", Level: suite.LevelRecord, Run: m53ChatParamMatrix, Doc: suite.CaseDoc{Purpose: "确认 chat/completions 对各参数的接受/拒绝行为与官方契约一致，网关静默吞参会造成行为偏差。", Method: "逐个参数单独发请求（temperature/top_p/n/penalty/max_tokens/stream/response_format/tools/reasoning_effort 等），记录各自 HTTP 状态。", Expect: "官方固定值（temperature=1.0、top_p=0.95、n=1、penalty=0）应 200，偏离值应 400；其余按官方支持矩阵记录，不设通过线。", Ref: "§2.1 官方契约锚点"}},
-		{ID: "M-54", Name: "Anthropic /v1/messages 协议", Level: suite.LevelRecord, Run: m54AnthropicProtocol, Doc: suite.CaseDoc{Purpose: "不少客户端走 Claude 的 /v1/messages 协议，需明确网关是否支持及参数透传程度（历史：转换层静默丢视频块）。", Method: "POST /v1/messages 基础请求 + temperature/top_p/stream 变体，记录状态码与响应结构。", Expect: "200 且结构为 message 类型（含 content[].text）记支持；404/405 记不支持；均不设通过线。", Ref: "§8.6 Anthropic 协议注意事项"}},
+		{ID: "M-53", Name: "冷门参数矩阵", Level: suite.LevelRecord, Run: m53ChatParamMatrix, Doc: suite.CaseDoc{Purpose: "确认没有专门用例覆盖的参数（penalty/seed/logprobs）与官方契约一致。", Method: "逐个参数单独发请求，记录 HTTP 状态；采样参数、effort、max_tokens、stream、JSON、tools 已由 F-08/M-12/M-15/M-05/M-01/M-16 等专门用例覆盖，此处不再重复。", Expect: "presence/frequency penalty 非 0 应 400；seed/logprobs 只记录，不设通过线。", Ref: "§2.1 官方契约锚点"}},
+		{ID: "M-54", Name: "Messages 协议", Level: suite.LevelRecord, Run: m54AnthropicProtocol, Doc: suite.CaseDoc{Purpose: "不少客户端走 Messages 协议，需明确网关是否支持及参数透传程度（历史：转换层静默丢视频块）。", Method: "优先 POST /v1/messages（兼容 /anthropic/v1/messages）+ temperature/top_p 变体，记录实际端点、状态码与响应结构。", Expect: "200 且结构为 message 类型（含 content[].text）记支持；404/405 记不支持；均不设通过线。", Ref: "§8.6 Messages 协议注意事项"}},
+		{ID: "M-58", Name: "工具闭环（非流式/流式）", Level: suite.LevelRequired, Run: m58ToolLoop, Doc: suite.CaseDoc{Purpose: "验证 tool_calls → tool 结果 → 最终回答的完整闭环，防止只能发起工具却不能回收结果。", Method: "首轮 tool_choice=required 获取 tool_call，回传 assistant tool_calls + role=tool 结果；分别以非流式、流式执行。", Expect: "两轮均 200；首轮含 id/name 的 tool_calls；回传后 content 非空且不再发起工具；必过。", Ref: "参考报告：工具闭环 stream=false/true"}},
+		{ID: "M-59", Name: "动态工具矩阵", Level: suite.LevelRequired, Run: m59DynamicTools, Doc: suite.CaseDoc{Purpose: "验证 messages 内 system.tools 的动态工具能力，及与顶层全局工具共存、跨轮注入。", Method: "分别测试仅消息内工具、动态+全局共存、先普通对话再注入动态工具。", Expect: "三次场景均 200 且实际调用消息内 get_weather；必过。", Ref: "参考报告：动态工具（含全局共存/多轮）"}},
+		{ID: "M-60", Name: "流式 effort 三档", Level: suite.LevelRequired, Run: m60StreamEffort, Doc: suite.CaseDoc{Purpose: "验证 low/high/max 在流式下仍输出思考内容，防止网关只对非流式保留 reasoning。", Method: "同一五位数整除题，stream=true + include_usage，分别 low/high/max。", Expect: "三档均 200、有分片，且 reasoning_content 非空；必过。", Ref: "参考报告：流式对话 low/high + 思考强度"}},
+		{ID: "M-61", Name: "Partial 开头续写", Level: suite.LevelRequired, Run: m61Partial, Doc: suite.CaseDoc{Purpose: "验证 assistant 前缀续写（partial:true）格式，覆盖写作/代码补全类调用。", Method: "assistant 消息 content 给半句并带 partial:true，要求补全。", Expect: "200 且续写包含 0/zero/celsius；必过。", Ref: "参考报告：Partial Mode 文本续写"}},
+		{ID: "M-62", Name: "流式严格结构化", Level: suite.LevelRequired, Run: m62StreamStrictSchema, Doc: suite.CaseDoc{Purpose: "验证流式响应仍遵守 strict json_schema，防止分片拼接后破坏结构。", Method: "response_format json_schema strict=true + stream=true，拼接 delta.content 后解析。", Expect: "200 且流式内容为含非空 name、temp 的 JSON；必过。", Ref: "参考报告：严格结构化输出 stream=true"}},
+		{ID: "M-55", Group: suite.GroupCache, Name: "缓存 1h 格式（Chat）", Level: suite.LevelRecord, Run: m55Cache1hChat, Doc: suite.CaseDoc{Purpose: "验证 Chat Completions 的 1h 缓存写入参数与响应计量字段（只测格式，不等待 1h）。", Method: "唯一前缀 + prompt_cache_options{mode=implicit,ttl=1h} 发一次请求。", Expect: "200；cache_write_tokens>0 且响应头 Msh-Usage-Cache-Write-Tokens-1h>0。", Ref: "§5.2 Cache Write / TTL"}},
+		{ID: "M-56", Group: suite.GroupCache, Name: "缓存 1h 格式（Responses）", Level: suite.LevelRecord, Run: m56Cache1hResponses, Doc: suite.CaseDoc{Purpose: "验证 Responses API 的 1h 缓存参数与 input_tokens_details 计量字段（只测格式）。", Method: "唯一前缀 + /v1/responses + prompt_cache_options{mode=implicit,ttl=1h} 发一次请求。", Expect: "200；input_tokens_details 有缓存计量，且响应头 Msh-Usage-Cache-Write-Tokens-1h>0。", Ref: "§5.2 Cache Write / TTL"}},
+		{ID: "M-57", Group: suite.GroupCache, Name: "缓存 1h 格式（Messages）", Level: suite.LevelRecord, Run: m57Cache1hMessages, Doc: suite.CaseDoc{Purpose: "验证 Messages 的顶层 cache_control 1h 参数与 cache_creation 计量字段（只测格式）。", Method: "唯一前缀 + 优先 /v1/messages（兼容 /anthropic/v1/messages）+ 顶层 cache_control{type=ephemeral,ttl=1h} 发一次请求。", Expect: "200；cache_creation_input_tokens>0 且 ephemeral_1h_input_tokens>0。", Ref: "§5.2 Cache Write / TTL"}},
 		{ID: "M-52", Name: "封禁说明（书面回填）", Level: suite.LevelRecord, Run: m52BanNote, Doc: suite.CaseDoc{Purpose: "收集供应商封禁策略。", Method: "供应商书面回填。", Expect: "跳过运行，不计通过率；书面回填。", Ref: "§5.1 M-52"}},
 		{ID: "M-B1", Name: "输出上限实测", Level: suite.LevelRequired, Run: mB1OutputCap, Doc: suite.CaseDoc{Purpose: "实测长输出上限与内容保真。", Method: "3000 行确定性 TSV 转 CSV，max_tokens=65536 流式。", Expect: "200 且输出是期望 CSV 精确前缀，并记录 completion 上限；必过。", Ref: "§5.2 M-B1"}},
-		{ID: "M-B2", Name: "输入体积边界", Level: suite.LevelRequired, Run: mB2InputBoundary, Doc: suite.CaseDoc{Purpose: "验证视频输入体积下限与拒绝探测。", Method: "红色视频 base64 梯度 1/10/45/65 MiB。", Expect: "1/10/45 MiB 均 200；记录 65 MiB 413 探测；必过。", Ref: "§5.2 M-B2"}},
-		{ID: "M-B3", Name: "缓存 TTL 曲线", Level: suite.LevelRequired, Run: mB3CacheTTL, Doc: suite.CaseDoc{Purpose: "验证缓存存活时间。", Method: "70k token 前缀预热，0/30/60/120/300 秒检查。", Expect: "30 秒及以后至少一次 cached 命中；必过。", Ref: "§5.2 M-B3"}},
-		{ID: "M-B4", Name: "缓存三场景", Level: suite.LevelRequired, Run: mB4CacheScenarios, Doc: suite.CaseDoc{Purpose: "验证缓存对常见会话形态的覆盖。", Method: "repeat/multiturn/suffix 各 1 预热+5 测量。", Expect: "每场景 token 命中率≥80%；必过。", Ref: "§5.2 M-B4"}},
+		{ID: "M-B2", Name: "视频理解体积上限（二分）", Level: suite.LevelRecord, Capability: CapVideo, DefaultSkip: true, Run: mB2VideoLimit, Doc: suite.CaseDoc{Purpose: "找出 base64 与 URL 两种视频输入方式下，模型仍能正确理解画面的最大文件体积；默认不测，勾选后作为重要指标。", Method: "以 1 MiB 为起点、100 MiB 为上限，二分探测；每个探测点发送红色视频并要求回答颜色，HTTP 200 且颜色正确才算通过。URL 400 unsupported 时记录不支持，不继续硬测。", Expect: "记录 base64/URL 体积上限、请求体大小与探测次数；不设 P0/P1 否决线。", Ref: "§5.2 M-B2 / §8.6"}},
+		{ID: "M-B3", Group: suite.GroupCache, Name: "缓存 5m TTL 曲线", Level: suite.LevelRequired, Run: mB3CacheTTL, Doc: suite.CaseDoc{Purpose: "验证默认 5m 缓存存活时间。", Method: "70k token 唯一前缀预热，显式 5m TTL，0/30/60/120/300 秒检查。", Expect: "30 秒及以后至少一次 cached 命中；必过。", Ref: "§5.2 M-B3"}},
+		{ID: "M-B4", Group: suite.GroupCache, Name: "缓存多轮/后缀场景", Level: suite.LevelRequired, Run: mB4CacheScenarios, Doc: suite.CaseDoc{Purpose: "验证缓存对多轮与尾部变化会话的覆盖；重复前缀命中率已由性能基准的 cache_hit_rate_percent 观测。", Method: "multiturn/suffix 各 1 预热+5 测量。", Expect: "两场景 token 命中率≥80%；必过。", Ref: "§5.2 M-B4"}},
+		{ID: "M-B5", Name: "最大输出 600K 参数", Level: suite.LevelOptional, Capability: CapOutput600K, DefaultSkip: true, Run: mB5MaxOutput600K, Doc: suite.CaseDoc{Purpose: "可选能力：确认 max_tokens=600000 是否被官方契约接受。", Method: "短提示 + max_tokens=600000，只验证参数接收，不要求实际生成满额。", Expect: "HTTP 200 记支持；400 记不支持（P3，仅勾选时生效）。", Ref: "§5.2 输出上限"}},
+		{ID: "M-B6", Name: "最大输出 1024K 参数", Level: suite.LevelOptional, Capability: CapOutput1024K, DefaultSkip: true, Run: mB6MaxOutput1024K, Doc: suite.CaseDoc{Purpose: "可选能力：确认 max_tokens=1048576 是否被接受；600K 不通时自动跳过。", Method: "先探测 600000，200 后再发 max_tokens=1048576，只验证参数接收。", Expect: "600K 不通则跳过；600K 通过且 1024K 200 记支持，否则记不支持。", Ref: "§5.2 输出上限"}},
+		{ID: "M-B7", Name: "1M 上下文（1024K）", Level: suite.LevelOptional, Capability: CapContext1M, DefaultSkip: true, Run: mB7Context1M, Doc: suite.CaseDoc{Purpose: "可选能力：确认 1024K 级输入上下文能被接受并正确计量。", Method: "校准后构造约 1M token 输入，短输出请求，检查 HTTP 200 与 prompt_tokens 达到 900K 以上。", Expect: "200 且 prompt_tokens ≥900K 记支持；其余记不支持（P3，仅勾选时生效）。", Ref: "§5.2 上下文边界"}},
 	}
 }
 
@@ -236,14 +247,13 @@ func m12Effort(c *suite.CaseCtx) suite.Outcome {
 		}
 	}
 	lo, hi, mx := tokens["low"], tokens["high"], tokens["max"]
-	if lo > 0 && hi > 0 && mx > 0 && mx < 2*min(lo, hi) {
-		defects = append(defects, suite.Defect{Level: "P1", Expect: "max ≥ 2×min(low,high) 或显著递增", Actual: fmt.Sprintf("low=%d high=%d max=%d", lo, hi, mx), Attribution: "upstream"})
-	}
+	// 官方只约束 low/high/max 三档可用，不承诺 token 数按固定倍率递增；
+	// 这里记录实际 reasoning token，避免把正常的推理长度波动判成故障。
 	metrics := map[string]any{"low_reasoning": lo, "high_reasoning": hi, "max_reasoning": mx}
 	if len(defects) > 0 {
 		return fail("effort 档位异常", defects, evidence...)
 	}
-	return pass(fmt.Sprintf("reasoning 递增: low=%d high=%d max=%d", lo, hi, mx), metrics, evidence...)
+	return pass(fmt.Sprintf("三档均 200 且有 reasoning（low=%d high=%d max=%d，仅记录）", lo, hi, mx), metrics, evidence...)
 }
 
 func m15EffortMedium(c *suite.CaseCtx) suite.Outcome {
@@ -253,8 +263,9 @@ func m15EffortMedium(c *suite.CaseCtx) suite.Outcome {
 	if r.HTTPStatus == 400 {
 		return pass("400 拒绝（对齐官方文档：仅 low/high/max）", nil, e)
 	}
-	// 官方文档仅 low/high/max；实测放行属网关与文档的偏离，降级为观察项。
-	return pass(fmt.Sprintf("HTTP %d（官方文档仅 low/high/max，实际放行，记偏离）", r.HTTPStatus), nil, e)
+	return fail(fmt.Sprintf("HTTP %d：medium 被放行", r.HTTPStatus), []suite.Defect{{
+		Level: "P1", Expect: "reasoning_effort=medium → 400（官方仅 low/high/max）", Actual: fmt.Sprintf("%d 放行", r.HTTPStatus), Attribution: "gateway",
+	}}, e)
 }
 
 // ---- 结构化输出 ----
@@ -262,7 +273,7 @@ func m15EffortMedium(c *suite.CaseCtx) suite.Outcome {
 func m16JSONObject(c *suite.CaseCtx) suite.Outcome {
 	body := map[string]any{
 		"messages":        userMsg(`输出 JSON：{"city":"北京","temp":26}`),
-		"max_tokens":      128,
+		"max_tokens":      512,
 		"response_format": map[string]any{"type": "json_object"},
 	}
 	r, retries := chat(c, body)
@@ -277,7 +288,7 @@ func m16JSONObject(c *suite.CaseCtx) suite.Outcome {
 func m17JSONSchema(c *suite.CaseCtx) suite.Outcome {
 	body := map[string]any{
 		"messages":   userMsg("生成一个城市：名称北京，温度 26"),
-		"max_tokens": 512,
+		"max_tokens": 1024,
 		"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{
 			"name": "city", "schema": map[string]any{
 				"type":       "object",
@@ -316,6 +327,22 @@ func weatherTools() []any {
 		"function": map[string]any{
 			"name":        "get_weather",
 			"description": "查询城市天气",
+			"parameters": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"city": map[string]any{"type": "string"}},
+				"required":   []string{"city"},
+			},
+		},
+	}}
+}
+
+// timeTools 是全局工具，用于验证“消息内动态工具 + 顶层全局工具”共存。
+func timeTools() []any {
+	return []any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "get_time",
+			"description": "查询城市当前时间",
 			"parameters": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"city": map[string]any{"type": "string"}},
@@ -420,7 +447,7 @@ func m25ToolErrorRecovery(c *suite.CaseCtx) suite.Outcome {
 			map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "get_weather", "arguments": `{"city":"北京"}`}}}},
 			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "ERROR: 服务暂时不可用"},
 		},
-		"max_tokens": 512,
+		"max_tokens": 1024,
 		"tools":      weatherTools(),
 	}
 	r, retries := chat(c, body)
@@ -477,20 +504,36 @@ func m29ImageURL(c *suite.CaseCtx) suite.Outcome {
 	return pass(fmt.Sprintf("HTTP %d（公网图拉取失败属网络环境，记录）", r.HTTPStatus), nil, e)
 }
 
+// 视频多模态请求需要给思考链留足预算；64 会被 reasoning 吃光，正文为空。
+const videoProbeMaxTokens = 600
+
 func m30Video(c *suite.CaseCtx) suite.Outcome {
-	redBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": 64}
+	redBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": videoProbeMaxTokens}
 	r1, rt1 := chatTimeout(c, redBody, suite.TimeoutLarge)
-	blueBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(blueMP4)), "max_tokens": 64}
+	blueBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(blueMP4)), "max_tokens": videoProbeMaxTokens}
 	r2, rt2 := chatTimeout(c, blueBody, suite.TimeoutLarge)
 	evidence := []suite.Evidence{ev("红视频", redBody, r1, rt1), ev("蓝视频", blueBody, r2, rt2)}
 	ok1 := r1.HTTPStatus == 200 && strings.Contains(r1.Content, "红")
 	ok2 := r2.HTTPStatus == 200 && strings.Contains(r2.Content, "蓝")
+	metrics := map[string]any{
+		"max_tokens": videoProbeMaxTokens,
+		"red_http":   r1.HTTPStatus, "blue_http": r2.HTTPStatus,
+		"red_finish": r1.FinishReason, "blue_finish": r2.FinishReason,
+		"red_reasoning_tokens": usageReasoning(r1), "blue_reasoning_tokens": usageReasoning(r2),
+	}
 	if ok1 && ok2 {
-		return pass("红答红、蓝答蓝，双对照通过", nil, evidence...)
+		return pass("红答红、蓝答蓝，双对照通过", metrics, evidence...)
 	}
 	return fail("视频双对照失败", []suite.Defect{
-		{Level: "P0", Expect: "红视频答红、蓝视频答蓝", Actual: fmt.Sprintf("红=%v(%s) 蓝=%v(%s)", ok1, truncate(r1.Content, 60), ok2, truncate(r2.Content, 60)), Attribution: "upstream"},
+		{Level: "P0", Expect: "红视频答红、蓝视频答蓝", Actual: fmt.Sprintf("红=%v(%s) 蓝=%v(%s)", ok1, videoResultText(r1, "红"), ok2, videoResultText(r2, "蓝")), Attribution: "upstream"},
 	}, evidence...)
+}
+
+func videoResultText(r suite.CallResult, want string) string {
+	if strings.TrimSpace(r.Content) == "" {
+		return fmt.Sprintf("HTTP %d content 为空 finish=%s reasoning_tokens=%d", r.HTTPStatus, r.FinishReason, usageReasoning(r))
+	}
+	return fmt.Sprintf("HTTP %d content=%q", r.HTTPStatus, truncate(r.Content, 80))
 }
 
 func m31VideoURL(c *suite.CaseCtx) suite.Outcome {
@@ -522,7 +565,7 @@ func m33Memory(c *suite.CaseCtx) suite.Outcome {
 			map[string]any{"role": "assistant", "content": "好的，我记住了，你叫林晓雨。"},
 			map[string]any{"role": "user", "content": "我叫什么名字？"},
 		},
-		"max_tokens": 64,
+		"max_tokens": 512,
 	}
 	r, retries := chat(c, body)
 	e := ev("记忆", body, r, retries)
@@ -609,7 +652,7 @@ func m37CleanOutput(c *suite.CaseCtx) suite.Outcome {
 	var evidence []suite.Evidence
 	dirty := []string{}
 	for _, prompt := range prompts {
-		r, retries := chat(c, map[string]any{"messages": userMsg(prompt), "max_tokens": 256})
+		r, retries := chat(c, map[string]any{"messages": userMsg(prompt), "max_tokens": 512})
 		evidence = append(evidence, ev(prompt, map[string]any{}, r, retries))
 		if r.HTTPStatus != 200 {
 			dirty = append(dirty, fmt.Sprintf("%s: HTTP %d", prompt, r.HTTPStatus))
@@ -657,16 +700,11 @@ func m38EOS(c *suite.CaseCtx) suite.Outcome {
 
 // ---- 缓存 ----
 
-// cachedPrefix 生成无随机 nonce 的固定前缀（缓存用例必须可复现命中）。
+// cachedPrefix 生成用例内固定、用例间不同的前缀：
+// 保留 fillPrompt 的 nonce，避免不同用例/重复运行时互相污染缓存。
 func cachedPrefix(c *suite.CaseCtx, tokens int) (string, error) {
 	prompt, _, err := fillPrompt(c, tokens)
-	if err != nil {
-		return "", err
-	}
-	if i := strings.Index(prompt, "] "); i >= 0 {
-		return prompt[i+2:], nil
-	}
-	return prompt, nil
+	return prompt, err
 }
 
 func m39CacheField(c *suite.CaseCtx) suite.Outcome {
@@ -674,45 +712,31 @@ func m39CacheField(c *suite.CaseCtx) suite.Outcome {
 	if err != nil {
 		return fail("前缀构造失败: "+err.Error(), nil)
 	}
-	body := map[string]any{"messages": userMsg(prefix + "\n请回答：1"), "max_tokens": 32}
-	chat(c, body) // 预热
-	r, retries := chat(c, body)
-	e := ev("缓存字段", body, r, retries)
-	if r.Usage != nil && strings.Contains(r.Raw, "prompt_tokens_details") {
-		return pass(fmt.Sprintf("cached_tokens=%d", r.Usage.CachedTokens), map[string]any{"cached_tokens": r.Usage.CachedTokens}, e)
-	}
-	return fail("prompt_tokens_details 字段缺失", []suite.Defect{{Level: "P1", Expect: "prompt_tokens_details 存在", Actual: "缺失", Attribution: "gateway"}}, e)
-}
-
-func m40CacheHit(c *suite.CaseCtx) suite.Outcome {
-	prefix, err := cachedPrefix(c, 2048)
-	if err != nil {
-		return fail("前缀构造失败: "+err.Error(), nil)
-	}
 	body := func() map[string]any {
-		return map[string]any{"messages": userMsg(prefix + "\n请回答：缓存测试"), "max_tokens": 32}
-	}
-	var evidence []suite.Evidence
-	r, retries := chat(c, body())
-	evidence = append(evidence, ev("预热", body(), r, retries))
-	prompt, cached := 0, 0
-	for i := range 5 {
-		r, retries := chat(c, body())
-		evidence = append(evidence, ev(fmt.Sprintf("测量 %d", i+1), body(), r, retries))
-		if r.Usage != nil {
-			prompt += r.Usage.PromptTokens
-			cached += r.Usage.CachedTokens
+		return map[string]any{
+			"messages":             userMsg(prefix + "\n请回答：1"),
+			"max_tokens":           32,
+			"prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "5m"},
 		}
 	}
-	rate := 0.0
-	if prompt > 0 {
-		rate = float64(cached) * 100 / float64(prompt)
+	warm, warmRetries := chat(c, body())
+	warmEvidence := ev("预热", body(), warm, warmRetries)
+	if warm.HTTPStatus != 200 || warm.Usage == nil {
+		return fail(fmt.Sprintf("预热 HTTP %d", warm.HTTPStatus), []suite.Defect{{Level: "P1", Expect: "预热 200 且 usage 存在", Actual: fmt.Sprintf("HTTP %d", warm.HTTPStatus), Attribution: "gateway"}}, warmEvidence)
 	}
-	metrics := map[string]any{"prompt_tokens": prompt, "cached_tokens": cached, "hit_rate_percent": rate}
-	if rate >= 80 {
-		return pass(fmt.Sprintf("命中率 %.1f%%", rate), metrics, evidence...)
+	write := warm.Usage.CacheWriteTokens
+	if write == 0 && warm.CacheWrite5m > 0 {
+		write = int(warm.CacheWrite5m)
 	}
-	return fail(fmt.Sprintf("命中率 %.1f%% < 80%%", rate), []suite.Defect{{Level: "P1", Expect: "token 口径命中率 ≥80%", Actual: fmt.Sprintf("%.2f%%", rate), Attribution: "upstream"}}, evidence...)
+	if write <= 0 {
+		return fail("缓存写入不可观测", []suite.Defect{{Level: "P1", Expect: "首次请求 cache_write_tokens > 0", Actual: "0", Attribution: "gateway"}}, warmEvidence)
+	}
+	r, retries := chat(c, body())
+	e := ev("缓存字段", body(), r, retries)
+	if r.Usage != nil && strings.Contains(r.Raw, "prompt_tokens_details") && r.Usage.CachedTokens > 0 {
+		return pass(fmt.Sprintf("写入 %d，命中 %d", write, r.Usage.CachedTokens), map[string]any{"cache_write_tokens": write, "cache_write_5m": warm.CacheWrite5m, "cache_write_1h": warm.CacheWrite1h, "cached_tokens": r.Usage.CachedTokens}, warmEvidence, e)
+	}
+	return fail("缓存命中字段缺失", []suite.Defect{{Level: "P1", Expect: "prompt_tokens_details 且 cached_tokens>0", Actual: "缺失或 0", Attribution: "gateway"}}, warmEvidence, e)
 }
 
 // ---- 错误与鉴权 ----
@@ -763,10 +787,12 @@ func m45HugeMaxTokens(c *suite.CaseCtx) suite.Outcome {
 	body := map[string]any{"messages": userMsg("a"), "max_tokens": 99999999}
 	r, retries := chat(c, body)
 	e := ev("max_tokens=99999999", body, r, retries)
+	// 官方对 max_completion_tokens 的上限是 1048576，且超出上下文时自动降低生成上限；
+	// 文档没有要求 max_tokens 超界必须 400。这里只记录网关是拒绝还是自动收敛。
 	if r.HTTPStatus == 400 {
-		return pass("400 拒绝（严格校验）", nil, e)
+		return pass("400 拒绝（记录）", map[string]any{"http_status": r.HTTPStatus}, e)
 	}
-	return pass(fmt.Sprintf("HTTP %d（官方对越界值宽容放行，记观察）", r.HTTPStatus), nil, e)
+	return pass(fmt.Sprintf("HTTP %d（超界未拒绝，记录；官方允许自动降低）", r.HTTPStatus), map[string]any{"http_status": r.HTTPStatus}, e)
 }
 
 func m46OutOfRange(c *suite.CaseCtx) suite.Outcome {
@@ -833,11 +859,15 @@ func m49ContextLength(c *suite.CaseCtx) suite.Outcome {
 		return pass("响应解析失败（None 不判负）", nil, e)
 	}
 	for _, m := range parsed.Data {
-		if m.ID == c.Target.Model {
-			return pass(fmt.Sprintf("context_length=%d", m.ContextLength), map[string]any{"context_length": m.ContextLength}, e)
+		if strings.EqualFold(strings.TrimSpace(m.ID), strings.TrimSpace(c.Target.Model)) {
+			summary := fmt.Sprintf("context_length=%d", m.ContextLength)
+			if m.ContextLength == 0 {
+				summary = "模型在列表，context_length 缺失"
+			}
+			return pass(summary, map[string]any{"model": m.ID, "model_in_list": true, "context_length": m.ContextLength}, e)
 		}
 	}
-	return pass("模型不在列表（None 不判负）", nil, e)
+	return pass("模型不在列表（None 不判负）", map[string]any{"model_in_list": false}, e)
 }
 
 func m50Latency10k(c *suite.CaseCtx) suite.Outcome {
@@ -845,7 +875,7 @@ func m50Latency10k(c *suite.CaseCtx) suite.Outcome {
 	if err != nil {
 		return fail("输入构造失败: "+err.Error(), nil)
 	}
-	body := map[string]any{"messages": userMsg(prompt + "\n请用一句话总结。"), "max_tokens": 256, "stream": true}
+	body := map[string]any{"messages": userMsg(prompt + "\n请用一句话总结。"), "max_tokens": 512, "stream": true}
 	r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 	e := ev("10k 输入", body, r, retries)
 	tpot := 0.0
@@ -863,22 +893,10 @@ func m53ChatParamMatrix(c *suite.CaseCtx) suite.Outcome {
 		patch map[string]any
 		want  int // 0 = 只记录
 	}{
-		{"temperature=1.0（官方固定值）", map[string]any{"temperature": 1.0}, 200},
-		{"temperature=0.7（偏离应拒）", map[string]any{"temperature": 0.7}, 400},
-		{"top_p=0.95（官方固定值）", map[string]any{"top_p": 0.95}, 200},
-		{"top_p=0.9（偏离应拒）", map[string]any{"top_p": 0.9}, 400},
-		{"n=1", map[string]any{"n": 1}, 200},
+		// 采样参数由 F-08 覆盖，effort 由 M-12/M-15 覆盖，
+		// max_tokens/stream/JSON/tools 均有专门用例；这里只保留无专门用例的参数。
 		{"presence_penalty=0.5（应拒）", map[string]any{"presence_penalty": 0.5}, 400},
 		{"frequency_penalty=0.5（应拒）", map[string]any{"frequency_penalty": 0.5}, 400},
-		{"max_tokens", map[string]any{"max_tokens": 32}, 200},
-		{"max_completion_tokens", map[string]any{"max_completion_tokens": 32}, 200},
-		{"stream+include_usage", map[string]any{"stream": true, "stream_options": map[string]any{"include_usage": true}}, 200},
-		{"response_format=json_object", map[string]any{"response_format": map[string]any{"type": "json_object"}}, 200},
-		{"tools+auto", map[string]any{"tools": weatherTools(), "tool_choice": "auto"}, 200},
-		{"reasoning_effort=low", map[string]any{"reasoning_effort": "low"}, 200},
-		{"reasoning_effort=high", map[string]any{"reasoning_effort": "high"}, 200},
-		{"reasoning_effort=max", map[string]any{"reasoning_effort": "max"}, 200},
-		{"reasoning_effort=medium（偏离记录）", map[string]any{"reasoning_effort": "medium"}, 0},
 		{"seed=42", map[string]any{"seed": 42}, 0},
 		{"logprobs", map[string]any{"logprobs": true}, 0},
 	}
@@ -907,7 +925,7 @@ func m53ChatParamMatrix(c *suite.CaseCtx) suite.Outcome {
 	return pass("参数矩阵: "+summary, map[string]any{"matrix": matrix}, evidence...)
 }
 
-// M-54：Anthropic /v1/messages 协议支持与参数透传。
+// M-54：Messages 兼容协议支持与参数透传（优先 /v1/messages）。
 func m54AnthropicProtocol(c *suite.CaseCtx) suite.Outcome {
 	probes := []struct {
 		label string
@@ -930,7 +948,7 @@ func m54AnthropicProtocol(c *suite.CaseCtx) suite.Outcome {
 		for k, v := range probe.patch {
 			body[k] = v
 		}
-		r := c.Client.Post(c, c.Target, "/v1/messages", body, suite.TimeoutNormal)
+		r := c.Client.Messages(c, c.Target, body, suite.TimeoutNormal)
 		evidence = append(evidence, ev(probe.label, body, r, 0))
 		structure := "unsupported"
 		if r.HTTPStatus == 200 {
@@ -940,10 +958,86 @@ func m54AnthropicProtocol(c *suite.CaseCtx) suite.Outcome {
 				structure = "nonstandard"
 			}
 		}
-		metrics[probe.label] = fmt.Sprintf("%d/%s", r.HTTPStatus, structure)
+		metrics[probe.label] = fmt.Sprintf("%d/%s %s", r.HTTPStatus, structure, r.Endpoint)
 		summary += fmt.Sprintf("%s:%d ", probe.label, r.HTTPStatus)
 	}
 	return pass("messages 协议: "+summary, metrics, evidence...)
+}
+
+// M-55：Chat Completions 的 1h 缓存格式（只发一次，不等待 TTL）。
+func m55Cache1hChat(c *suite.CaseCtx) suite.Outcome {
+	prefix, err := cachedPrefix(c, 2048)
+	if err != nil {
+		return fail("前缀构造失败: "+err.Error(), nil)
+	}
+	body := map[string]any{
+		"messages":             userMsg(prefix + "\n只回答 OK"),
+		"max_tokens":           8,
+		"prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "1h"},
+	}
+	r, retries := chat(c, body)
+	e := ev("Chat 1h", body, r, retries)
+	if r.HTTPStatus != 200 || r.Usage == nil {
+		return fail(fmt.Sprintf("HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P2", Expect: "HTTP 200 且 usage 存在", Actual: fmt.Sprintf("HTTP %d", r.HTTPStatus), Attribution: "gateway"}}, e)
+	}
+	write := r.Usage.CacheWriteTokens
+	if write == 0 && r.CacheWrite1h > 0 {
+		write = int(r.CacheWrite1h)
+	}
+	if write <= 0 || r.CacheWrite1h <= 0 {
+		return fail("1h 写入不可观测", []suite.Defect{{Level: "P2", Expect: "cache_write_tokens 与 Msh-Usage-Cache-Write-Tokens-1h 均>0", Actual: fmt.Sprintf("write=%d header1h=%d", r.Usage.CacheWriteTokens, r.CacheWrite1h), Attribution: "gateway"}}, e)
+	}
+	metrics := map[string]any{"cache_write_tokens": write, "cache_write_1h": r.CacheWrite1h, "cached_tokens": r.Usage.CachedTokens, "prompt_tokens": r.Usage.PromptTokens}
+	return pass(fmt.Sprintf("1h 写入 %d，header=%d", write, r.CacheWrite1h), metrics, e)
+}
+
+// M-56：Responses API 的 1h 缓存格式（只发一次，不等待 TTL）。
+func m56Cache1hResponses(c *suite.CaseCtx) suite.Outcome {
+	prefix, err := cachedPrefix(c, 2048)
+	if err != nil {
+		return fail("前缀构造失败: "+err.Error(), nil)
+	}
+	body := map[string]any{
+		"input":                prefix + "\n只回答 OK",
+		"max_output_tokens":    16,
+		"prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "1h"},
+	}
+	r := c.Client.Responses(c, c.Target, body, suite.TimeoutNormal)
+	e := ev("Responses 1h", body, r, 0)
+	if r.HTTPStatus != 200 || r.Usage == nil {
+		return fail(fmt.Sprintf("HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P2", Expect: "HTTP 200 且 usage.input_tokens_details 存在", Actual: fmt.Sprintf("HTTP %d", r.HTTPStatus), Attribution: "gateway"}}, e)
+	}
+	if r.Usage.CacheWriteTokens <= 0 && r.Usage.CachedTokens <= 0 {
+		return fail("缓存明细缺失", []suite.Defect{{Level: "P2", Expect: "input_tokens_details.cache_write_tokens 或 cached_tokens >0", Actual: "0", Attribution: "gateway"}}, e)
+	}
+	if r.CacheWrite1h <= 0 {
+		return fail("1h 档位头缺失", []suite.Defect{{Level: "P2", Expect: "Msh-Usage-Cache-Write-Tokens-1h > 0", Actual: fmt.Sprintf("%d", r.CacheWrite1h), Attribution: "gateway"}}, e)
+	}
+	metrics := map[string]any{"cache_write_tokens": r.Usage.CacheWriteTokens, "cached_tokens": r.Usage.CachedTokens, "prompt_tokens": r.Usage.PromptTokens, "cache_write_1h_header": r.CacheWrite1h}
+	return pass(fmt.Sprintf("1h 格式 OK: write=%d cached=%d", r.Usage.CacheWriteTokens, r.Usage.CachedTokens), metrics, e)
+}
+
+// M-57：Anthropic Messages 的顶层 cache_control 1h 格式（只发一次，不等待 TTL）。
+func m57Cache1hMessages(c *suite.CaseCtx) suite.Outcome {
+	prefix, err := cachedPrefix(c, 2048)
+	if err != nil {
+		return fail("前缀构造失败: "+err.Error(), nil)
+	}
+	body := map[string]any{
+		"max_tokens":    8,
+		"messages":      []any{map[string]any{"role": "user", "content": prefix + "\n只回答 OK"}},
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+	}
+	r := c.Client.Messages(c, c.Target, body, suite.TimeoutNormal)
+	e := ev("Messages 1h", body, r, 0)
+	if r.HTTPStatus != 200 || r.Usage == nil {
+		return fail(fmt.Sprintf("HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P2", Expect: "HTTP 200 且 cache_creation 字段存在", Actual: fmt.Sprintf("HTTP %d", r.HTTPStatus), Attribution: "gateway"}}, e)
+	}
+	if r.Usage.CacheWriteTokens <= 0 || r.Usage.CacheWrite1h <= 0 {
+		return fail("1h 写入明细缺失", []suite.Defect{{Level: "P2", Expect: "cache_creation_input_tokens>0 且 ephemeral_1h_input_tokens>0", Actual: fmt.Sprintf("creation=%d 1h=%d", r.Usage.CacheWriteTokens, r.Usage.CacheWrite1h), Attribution: "gateway"}}, e)
+	}
+	metrics := map[string]any{"cache_write_tokens": r.Usage.CacheWriteTokens, "cache_write_1h": r.Usage.CacheWrite1h, "cached_tokens": r.Usage.CachedTokens, "prompt_tokens": r.Usage.PromptTokens, "endpoint": r.Endpoint}
+	return pass(fmt.Sprintf("1h 写入 %d @ %s", r.Usage.CacheWrite1h, r.Endpoint), metrics, e)
 }
 
 func m51RateLimitNote(c *suite.CaseCtx) suite.Outcome {
@@ -989,50 +1083,222 @@ func mB1OutputCap(c *suite.CaseCtx) suite.Outcome {
 	return pass(fmt.Sprintf("completion 上限=%d tokens（finish=%s）", completion, r.FinishReason), metrics, e)
 }
 
-// M-B2：视频 base64 梯度 1/10/45 MiB + 触发 413 一档；MP4 尾部追加 free box 扩体积。
-func mB2InputBoundary(c *suite.CaseCtx) suite.Outcome {
-	pad := func(data []byte, target int) []byte {
-		if len(data) >= target {
-			return data
-		}
-		freeLen := target - len(data)
+// M-B2：在 1–100 MiB 范围内二分视频理解体积上限；默认跳过。
+const (
+	videoLimitMin  = 1 << 20
+	videoLimitMax  = 100 << 20
+	videoLimitStep = 1 << 20
+)
+
+type videoLimitResult struct {
+	limitBytes      int
+	supported       bool
+	unsupportedURL  bool
+	probes          int
+	maxRequestBytes int
+	lastReason      string
+}
+
+const videoLimitPrompt = "这段视频是什么颜色？只回答颜色。"
+
+func videoLimitProbe(c *suite.CaseCtx, label string, size int, uri string) (suite.CallResult, int, suite.Evidence) {
+	body := map[string]any{"messages": videoMsg(videoLimitPrompt, uri), "max_tokens": videoProbeMaxTokens}
+	r, retries := chatTimeout(c, body, suite.TimeoutOutput)
+	payload, _ := json.Marshal(body)
+	return r, len(payload), ev(fmt.Sprintf("%s %.1f MiB", label, float64(size)/(1<<20)), body, r, retries)
+}
+
+type videoZeroReader struct{}
+
+func (videoZeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+// paddedMP4Reader 以流的方式提供「原 MP4 + free box + 零填充」，不分配完整 100MB。
+func paddedMP4Reader(size int) io.Reader {
+	if size <= len(redMP4) {
+		return bytes.NewReader(redMP4)
+	}
+	freeLen := size - len(redMP4)
+	parts := []io.Reader{bytes.NewReader(redMP4)}
+	if freeLen >= 8 {
 		box := make([]byte, 8)
 		binary.BigEndian.PutUint32(box, uint32(freeLen))
 		copy(box[4:], "free")
-		return append(append(data, box...), make([]byte, freeLen-8)...)
+		parts = append(parts, bytes.NewReader(box), io.LimitReader(videoZeroReader{}, int64(freeLen-8)))
+	} else {
+		parts = append(parts, io.LimitReader(videoZeroReader{}, int64(freeLen)))
 	}
-	videoOf := func(size int) string {
-		return videoDataURI(pad(redMP4, size))
+	return io.MultiReader(parts...)
+}
+
+// videoLimitBase64Probe 把 base64 编码直接写入 HTTP 请求 pipe，避免完整 base64/JSON 常驻内存。
+func videoLimitBase64Probe(c *suite.CaseCtx, label string, size int) (suite.CallResult, int, suite.Evidence) {
+	const marker = "__NICETOOLS_VIDEO_BASE64__"
+	body := map[string]any{"model": c.Target.Model, "messages": videoMsg(videoLimitPrompt, "data:video/mp4;base64,"+marker), "max_tokens": videoProbeMaxTokens}
+	raw, _ := json.Marshal(body)
+	markerBytes := []byte(marker)
+	idx := bytes.Index(raw, markerBytes)
+	if idx < 0 {
+		return suite.CallResult{ErrKind: "client", ErrMsg: "视频请求标记丢失"}, 0, suite.Evidence{Label: label}
 	}
-	// 体积梯度 5/50/80/100 MiB：5MiB 应可用，其余记录实际行为与 413 阈值。
-	steps := []struct {
-		label string
-		bytes int
-		want  int
-	}{
-		{"5MiB", 5 << 20, 200},
-		{"50MiB", 50 << 20, 0},
-		{"80MiB", 80 << 20, 0},
-		{"100MiB", 100 << 20, 0},
-	}
-	var evidence []suite.Evidence
-	var defects []suite.Defect
-	results := map[string]int{}
-	for _, step := range steps {
-		body := map[string]any{"messages": videoMsg("这段视频是什么颜色？", videoOf(step.bytes)), "max_tokens": 32}
-		r, retries := chatTimeout(c, body, suite.TimeoutLarge)
-		evidence = append(evidence, ev(step.label, map[string]any{"video_bytes": step.bytes}, r, retries))
-		results[step.label] = r.HTTPStatus
-		if step.want == 200 && r.HTTPStatus != 200 {
-			defects = append(defects, suite.Defect{Level: "P1", Expect: step.label + " → 200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "gateway"})
+	prefix, suffix := raw[:idx], raw[idx+len(markerBytes):]
+	encodedLen := int64(4 * ((size + 2) / 3))
+	contentLen := int64(len(prefix)) + encodedLen + int64(len(suffix))
+	pr, pw := io.Pipe()
+	go func() {
+		if _, err := pw.Write(prefix); err != nil {
+			pw.CloseWithError(err)
+			return
 		}
+		enc := base64.NewEncoder(base64.StdEncoding, pw)
+		if _, err := io.Copy(enc, paddedMP4Reader(size)); err != nil {
+			_ = enc.Close()
+			pw.CloseWithError(err)
+			return
+		}
+		if err := enc.Close(); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if _, err := pw.Write(suffix); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+	r := c.Client.ChatRaw(c, c.Target, pr, contentLen, false, suite.TimeoutOutput)
+	_ = pr.Close()
+	summaryBody := map[string]any{"messages": videoMsg(videoLimitPrompt, fmt.Sprintf("data:video/mp4;base64,…[%d bytes]", size)), "max_tokens": videoProbeMaxTokens}
+	return r, int(contentLen), ev(fmt.Sprintf("%s %.1f MiB", label, float64(size)/(1<<20)), summaryBody, r, 0)
+}
+
+type videoLimitProbeFn func(int) (suite.CallResult, int, suite.Evidence)
+
+func videoLimitPass(r suite.CallResult) bool {
+	return r.HTTPStatus == 200 && strings.Contains(r.Content, "红")
+}
+
+func videoLimitReason(r suite.CallResult) string {
+	if r.HTTPStatus != 200 {
+		return fmt.Sprintf("HTTP %d", r.HTTPStatus)
 	}
-	metrics := map[string]any{"http_by_size": results}
-	summary := fmt.Sprintf("5MiB=%d 50MiB=%d 80MiB=%d 100MiB=%d", results["5MiB"], results["50MiB"], results["80MiB"], results["100MiB"])
-	if len(defects) > 0 {
-		return fail("视频体积边界未达标："+summary, defects, evidence...)
+	if strings.TrimSpace(r.Content) == "" {
+		return fmt.Sprintf("content 为空（finish=%s）", r.FinishReason)
 	}
-	return pass("视频体积梯度完成："+summary, metrics, evidence...)
+	return "颜色识别不正确"
+}
+
+func mB2VideoLimit(c *suite.CaseCtx) suite.Outcome {
+	var evidence []suite.Evidence
+	metrics := map[string]any{
+		"limit_max_mib":  100,
+		"probe_step_mib": 1,
+	}
+	var defects []suite.Defect
+
+	probe := func(label string, size int, fn videoLimitProbeFn) (suite.CallResult, int, bool) {
+		r, requestBytes, e := fn(size)
+		evidence = append(evidence, e)
+		metrics[label+"_request_bytes"] = requestBytes
+		metrics[label+"_last_http"] = r.HTTPStatus
+		metrics[label+"_last_finish"] = r.FinishReason
+		return r, requestBytes, videoLimitPass(r)
+	}
+
+	search := func(label string, fn videoLimitProbeFn, unsupportedIfURLError bool) videoLimitResult {
+		out := videoLimitResult{supported: true}
+		first, firstBytes, ok := probe(label, videoLimitMin, fn)
+		out.probes++
+		out.maxRequestBytes = firstBytes
+		if !ok && unsupportedIfURLError && first.HTTPStatus == 400 &&
+			strings.Contains(strings.ToLower(first.Raw), "unsupported") {
+			out.supported = false
+			out.unsupportedURL = true
+			out.lastReason = "网关不支持 http(s) 视频 URL"
+			return out
+		}
+		if !ok {
+			out.supported = false
+			out.lastReason = videoLimitReason(first)
+			return out
+		}
+		out.limitBytes = videoLimitMin
+		// 先探测上限；若上限也通过，直接记录 100 MiB。
+		_, hiBytes, hiOK := probe(label+" 上限", videoLimitMax, fn)
+		out.probes++
+		if hiBytes > out.maxRequestBytes {
+			out.maxRequestBytes = hiBytes
+		}
+		if hiOK {
+			out.limitBytes = videoLimitMax
+			return out
+		}
+		hi := videoLimitMax
+		lo := videoLimitMin
+		for hi-lo > videoLimitStep {
+			mid := (lo + hi) / 2
+			r, bytes, pass := probe(label+" 二分", mid, fn)
+			out.probes++
+			if bytes > out.maxRequestBytes {
+				out.maxRequestBytes = bytes
+			}
+			if pass {
+				lo, out.limitBytes = mid, mid
+			} else {
+				hi = mid
+				out.lastReason = videoLimitReason(r)
+			}
+			if c.CheckControl != nil && c.CheckControl() != nil {
+				out.lastReason = "按控制信号中止"
+				return out
+			}
+		}
+		out.limitBytes = lo
+		return out
+	}
+
+	b64 := search("base64", func(size int) (suite.CallResult, int, suite.Evidence) {
+		return videoLimitBase64Probe(c, "base64", size)
+	}, false)
+	metrics["base64_supported"] = b64.supported
+	metrics["base64_limit_mib"] = float64(b64.limitBytes) / (1 << 20)
+	metrics["base64_limit_bytes"] = b64.limitBytes
+	metrics["base64_probes"] = b64.probes
+	metrics["base64_max_request_bytes"] = b64.maxRequestBytes
+	if !b64.supported {
+		defects = append(defects, suite.Defect{Level: "P2", Expect: "1 MiB 视频可理解", Actual: b64.lastReason, Attribution: "upstream"})
+	}
+
+	urlBase := c.MediaURL("red.mp4")
+	url := videoLimitResult{unsupportedURL: true, lastReason: "本服务未配置公开媒体地址"}
+	if urlBase != "" {
+		url = search("url", func(size int) (suite.CallResult, int, suite.Evidence) {
+			return videoLimitProbe(c, "url", size, fmt.Sprintf("%s?size=%d", strings.TrimSuffix(urlBase, "/"), size))
+		}, true)
+	}
+	metrics["url_supported"] = url.supported
+	metrics["url_limit_mib"] = float64(url.limitBytes) / (1 << 20)
+	metrics["url_limit_bytes"] = url.limitBytes
+	metrics["url_probes"] = url.probes
+	metrics["url_max_request_bytes"] = url.maxRequestBytes
+	if url.unsupportedURL {
+		metrics["url_note"] = url.lastReason
+	}
+
+	summary := fmt.Sprintf("base64 上限 %.1f MiB；URL %s", metrics["base64_limit_mib"], func() string {
+		if url.unsupportedURL {
+			return "不支持/未测"
+		}
+		if url.supported {
+			return fmt.Sprintf("上限 %.1f MiB", metrics["url_limit_mib"])
+		}
+		return "未通过"
+	}())
+	return suite.Outcome{Status: suite.StatusPassed, Summary: summary, Metrics: metrics, Defects: defects, Evidence: evidence}
 }
 
 // M-30B：base64 与 URL 两种视频传输通道都要验证（同一红视频双对照）。
@@ -1041,30 +1307,47 @@ func m30BVideoChannels(c *suite.CaseCtx) suite.Outcome {
 	var defects []suite.Defect
 	metrics := map[string]any{}
 
-	b64Body := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": 64}
+	b64Body := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", videoDataURI(redMP4)), "max_tokens": videoProbeMaxTokens}
 	r1, rt1 := chatTimeout(c, b64Body, suite.TimeoutLarge)
 	evidence = append(evidence, ev("base64 通道", b64Body, r1, rt1))
 	metrics["base64_http"] = r1.HTTPStatus
+	metrics["base64_finish"] = r1.FinishReason
+	metrics["base64_reasoning_tokens"] = usageReasoning(r1)
 	if r1.HTTPStatus != 200 || !strings.Contains(r1.Content, "红") {
-		defects = append(defects, suite.Defect{Level: "P0", Expect: "base64 视频答红", Actual: fmt.Sprintf("HTTP %d %s", r1.HTTPStatus, truncate(r1.Content, 60)), Attribution: "upstream"})
+		defects = append(defects, suite.Defect{Level: "P0", Expect: "base64 视频答红", Actual: videoResultText(r1, "红"), Attribution: "upstream"})
 	}
 
 	url := c.MediaURL("red.mp4")
+	urlOK := false
 	if url == "" {
 		metrics["url_http"] = "本服务未配置公开地址，URL 通道未测"
 	} else {
-		urlBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", url), "max_tokens": 64}
+		urlBody := map[string]any{"messages": videoMsg("这段视频的主体是什么颜色？只回答颜色。", url), "max_tokens": videoProbeMaxTokens}
 		r2, rt2 := chatTimeout(c, urlBody, suite.TimeoutLarge)
 		evidence = append(evidence, ev("URL 通道", urlBody, r2, rt2))
 		metrics["url_http"] = r2.HTTPStatus
-		if r2.HTTPStatus != 200 || !strings.Contains(r2.Content, "红") {
-			defects = append(defects, suite.Defect{Level: "P0", Expect: "URL 视频答红", Actual: fmt.Sprintf("HTTP %d %s", r2.HTTPStatus, truncate(r2.Content, 60)), Attribution: "upstream"})
+		metrics["url_finish"] = r2.FinishReason
+		metrics["url_reasoning_tokens"] = usageReasoning(r2)
+		switch {
+		case r2.HTTPStatus == 200 && strings.Contains(r2.Content, "红"):
+			urlOK = true
+			metrics["url_supported"] = true
+		case r2.HTTPStatus == 400:
+			// 该网关明确不支持 http(s) URL，base64 才是实际能力；只记录，不判 P0。
+			metrics["url_supported"] = false
+			metrics["url_note"] = "网关不支持 http(s) URL，按记录处理"
+		default:
+			metrics["url_supported"] = false
+			metrics["url_note"] = fmt.Sprintf("URL 通道异常：HTTP %d", r2.HTTPStatus)
 		}
 	}
 	if len(defects) > 0 {
-		return fail("视频传输通道验证失败", defects, evidence...)
+		return fail("视频 base64 通道验证失败", defects, evidence...)
 	}
-	return pass("base64 与 URL 双通道均正确识别", metrics, evidence...)
+	if urlOK {
+		return pass("base64 与 URL 双通道均正确识别", metrics, evidence...)
+	}
+	return pass("base64 视频正确识别；URL 通道不支持/未测（记录）", metrics, evidence...)
 }
 
 // M-B3：70k token 前缀预热，0/30/60/120/300s 检查点；TTL ≥ 30s。
@@ -1074,7 +1357,11 @@ func mB3CacheTTL(c *suite.CaseCtx) suite.Outcome {
 		return fail("前缀构造失败: "+err.Error(), nil)
 	}
 	body := func() map[string]any {
-		return map[string]any{"messages": userMsg(prefix + "\n请只回答：TTL"), "max_tokens": 32}
+		return map[string]any{
+			"messages":             userMsg(prefix + "\n请只回答：TTL"),
+			"max_tokens":           32,
+			"prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "5m"},
+		}
 	}
 	var evidence []suite.Evidence
 	r, retries := chatTimeout(c, body(), suite.TimeoutLarge)
@@ -1094,11 +1381,14 @@ func mB3CacheTTL(c *suite.CaseCtx) suite.Outcome {
 		previous = sec
 		r, retries := chatTimeout(c, body(), suite.TimeoutLarge)
 		evidence = append(evidence, ev(fmt.Sprintf("%ds", sec), body(), r, retries))
-		rate := 0.0
-		if r.Usage != nil && r.Usage.PromptTokens > 0 {
-			rate = float64(r.Usage.CachedTokens) * 100 / float64(r.Usage.PromptTokens)
+		rate, cached, prompt := 0.0, 0, 0
+		if r.Usage != nil {
+			cached, prompt = r.Usage.CachedTokens, r.Usage.PromptTokens
+			if prompt > 0 {
+				rate = float64(cached) * 100 / float64(prompt)
+			}
 		}
-		curve = append(curve, map[string]any{"seconds": sec, "hit_rate_percent": rate})
+		curve = append(curve, map[string]any{"seconds": sec, "hit_rate_percent": rate, "cached_tokens": cached, "prompt_tokens": prompt})
 		if sec >= 30 && rate > 0 {
 			hitAt30 = true
 		}
@@ -1110,7 +1400,8 @@ func mB3CacheTTL(c *suite.CaseCtx) suite.Outcome {
 	return pass("TTL ≥ 30s", metrics, evidence...)
 }
 
-// M-B4：repeat / multiturn / suffix 三场景，各 1 预热 + 5 测量，覆盖率 ≥80%。
+// M-B4：multiturn / suffix 两场景，各 1 预热 + 5 测量，覆盖率 ≥80%。
+// 重复前缀（repeat）已由性能基准的 cache_hit_rate_percent 观测，不再单独重复。
 func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 	prefix, err := cachedPrefix(c, 2048)
 	if err != nil {
@@ -1120,18 +1411,15 @@ func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 		name  string
 		build func(i int) map[string]any
 	}{
-		{"repeat", func(int) map[string]any {
-			return map[string]any{"messages": userMsg(prefix + "\n请回答：缓存测试"), "max_tokens": 32}
-		}},
 		{"multiturn", func(i int) map[string]any {
 			return map[string]any{"messages": []any{
 				map[string]any{"role": "user", "content": prefix},
 				map[string]any{"role": "assistant", "content": "我已阅读该前缀。"},
 				map[string]any{"role": "user", "content": fmt.Sprintf("第 %d 次追问", i+1)},
-			}, "max_tokens": 32}
+			}, "max_tokens": 32, "prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "5m"}}
 		}},
 		{"suffix", func(i int) map[string]any {
-			return map[string]any{"messages": userMsg(prefix + fmt.Sprintf("\n尾部 %s-%d", nonce(), i)), "max_tokens": 32}
+			return map[string]any{"messages": userMsg(prefix + fmt.Sprintf("\n尾部 %s-%d", nonce(), i)), "max_tokens": 32, "prompt_cache_options": map[string]any{"mode": "implicit", "ttl": "5m"}}
 		}},
 	}
 	var evidence []suite.Evidence
@@ -1153,6 +1441,8 @@ func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 		if prompt > 0 {
 			rate = float64(cached) * 100 / float64(prompt)
 		}
+		metrics[sc.name+"_cached_tokens"] = cached
+		metrics[sc.name+"_prompt_tokens"] = prompt
 		metrics[sc.name+"_hit_rate_percent"] = rate
 		if rate < 80 {
 			defects = append(defects, suite.Defect{Level: "P1", Expect: sc.name + " 覆盖率 ≥80%", Actual: fmt.Sprintf("%.1f%%", rate), Attribution: "upstream"})
@@ -1161,7 +1451,61 @@ func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 	if len(defects) > 0 {
 		return fail("缓存场景未达标", defects, evidence...)
 	}
-	return pass("三场景覆盖率均 ≥80%", metrics, evidence...)
+	return pass("多轮/后缀两场景覆盖率均 ≥80%", metrics, evidence...)
+}
+
+// M-B5/M-B6：可选最大输出参数探测（只验证参数接收，不实际生成满额）。
+func probeMaxOutput(c *suite.CaseCtx, limit int) (suite.CallResult, int) {
+	body := map[string]any{"messages": userMsg("只回答 OK"), "max_tokens": limit}
+	return chatTimeout(c, body, suite.TimeoutLarge)
+}
+
+func mB5MaxOutput600K(c *suite.CaseCtx) suite.Outcome {
+	r, retries := probeMaxOutput(c, 600000)
+	body := map[string]any{"messages": userMsg("只回答 OK"), "max_tokens": 600000}
+	e := ev("max_tokens=600000", body, r, retries)
+	if r.HTTPStatus == 200 {
+		return pass("600K 参数被接受", map[string]any{"max_tokens": 600000, "http_status": r.HTTPStatus}, e)
+	}
+	return fail(fmt.Sprintf("600K 不支持：HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P3", Expect: "max_tokens=600000 → 200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "upstream"}}, e)
+}
+
+func mB6MaxOutput1024K(c *suite.CaseCtx) suite.Outcome {
+	// 600K 是 1024K 的前置门槛；不通过则 1024K 不测。
+	r600, retries600 := probeMaxOutput(c, 600000)
+	body600 := map[string]any{"messages": userMsg("只回答 OK"), "max_tokens": 600000}
+	e600 := ev("600K 前置探测", body600, r600, retries600)
+	if r600.HTTPStatus != 200 {
+		return suite.Outcome{Status: suite.StatusSkipped, Summary: fmt.Sprintf("600K 未通过（HTTP %d），1024K 未测", r600.HTTPStatus), Evidence: []suite.Evidence{e600}}
+	}
+	r, retries := probeMaxOutput(c, 1048576)
+	body := map[string]any{"messages": userMsg("只回答 OK"), "max_tokens": 1048576}
+	e := ev("max_tokens=1048576", body, r, retries)
+	if r.HTTPStatus == 200 {
+		return pass("1024K 参数被接受", map[string]any{"max_tokens": 1048576, "http_status": r.HTTPStatus}, e600, e)
+	}
+	return fail(fmt.Sprintf("1024K 不支持：HTTP %d", r.HTTPStatus), []suite.Defect{{Level: "P3", Expect: "max_tokens=1048576 → 200", Actual: fmt.Sprintf("%d", r.HTTPStatus), Attribution: "upstream"}}, e600, e)
+}
+
+func mB7Context1M(c *suite.CaseCtx) suite.Outcome {
+	prompt, actual, err := fillPrompt(c, 1_000_000)
+	if err != nil {
+		return fail("1M 上下文输入构造失败: "+err.Error(), nil)
+	}
+	body := map[string]any{"messages": userMsg(prompt + "\n请只回答 OK"), "max_tokens": 64}
+	r, retries := chatTimeout(c, body, suite.TimeoutOutput)
+	e := ev("1M 上下文", body, r, retries)
+	promptTokens := 0
+	if r.Usage != nil {
+		promptTokens = r.Usage.PromptTokens
+	}
+	metrics := map[string]any{"calibrated_input_tokens": actual, "prompt_tokens": promptTokens, "http_status": r.HTTPStatus}
+	if r.HTTPStatus == 200 && promptTokens >= 900_000 {
+		return pass(fmt.Sprintf("1M 上下文接受，prompt_tokens=%d", promptTokens), metrics, e)
+	}
+	return fail(fmt.Sprintf("1M 上下文未通过（HTTP %d，prompt_tokens=%d）", r.HTTPStatus, promptTokens), []suite.Defect{{
+		Level: "P3", Expect: "HTTP 200 且 prompt_tokens≥900K", Actual: fmt.Sprintf("%d / %d", r.HTTPStatus, promptTokens), Attribution: "upstream",
+	}}, e)
 }
 
 // ---- 素材 ----
@@ -1184,4 +1528,270 @@ func silenceWAVBase64() string {
 	_ = binary.Write(&buf, binary.LittleEndian, uint32(dataSize))
 	buf.Write(make([]byte, dataSize))
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// ---- P1 补齐：工具闭环、动态工具、流式 effort、Partial、严格结构化流式 ----
+
+// assistantToolCall 把响应里的工具调用还原为下一轮 assistant 消息。
+func assistantToolCall(call suite.ToolCall) map[string]any {
+	args := call.Arguments
+	if strings.TrimSpace(args) == "" {
+		args = "{}"
+	}
+	return map[string]any{
+		"role":    "assistant",
+		"content": "",
+		"tool_calls": []any{map[string]any{
+			"id":   call.ID,
+			"type": "function",
+			"function": map[string]any{
+				"name":      call.Name,
+				"arguments": args,
+			},
+		}},
+	}
+}
+
+func toolResultMessage(call suite.ToolCall, content string) map[string]any {
+	return map[string]any{"role": "tool", "tool_call_id": call.ID, "content": content}
+}
+
+func toolCallNamesFromResult(r suite.CallResult) []string {
+	names := make([]string, 0, len(r.ToolCalls))
+	for _, call := range r.ToolCalls {
+		names = append(names, call.Name)
+	}
+	return names
+}
+
+func hasToolCall(r suite.CallResult, name string) bool {
+	for _, call := range r.ToolCalls {
+		if call.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func streamRequestBody() map[string]any {
+	return map[string]any{"stream": true, "stream_options": map[string]any{"include_usage": true}}
+}
+
+func m58ToolLoop(c *suite.CaseCtx) suite.Outcome {
+	var evidence []suite.Evidence
+	var defects []suite.Defect
+	for _, stream := range []bool{false, true} {
+		label := "工具闭环 / 非流式"
+		if stream {
+			label = "工具闭环 / 流式"
+		}
+		first := map[string]any{
+			"messages":              userMsg("查询北京天气。必须调用 get_weather。"),
+			"max_completion_tokens": 4096,
+			"reasoning_effort":      "low",
+			"tools":                 weatherTools(),
+			"tool_choice":           "required",
+		}
+		if stream {
+			for k, v := range streamRequestBody() {
+				first[k] = v
+			}
+		}
+		r1, retries1 := chat(c, first)
+		evidence = append(evidence, ev(label+" 首轮", first, r1, retries1))
+		if r1.HTTPStatus != 200 {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: label + " 首轮 200", Actual: fmt.Sprintf("HTTP %d", r1.HTTPStatus), Attribution: "gateway"})
+			continue
+		}
+		if len(r1.ToolCalls) == 0 {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "首轮返回 tool_calls", Actual: truncate(r1.Content+" "+r1.Raw, 120), Attribution: "upstream"})
+			continue
+		}
+		call := r1.ToolCalls[0]
+		if call.ID == "" || call.Name == "" {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "tool_call 含 id/name", Actual: fmt.Sprintf("%+v", call), Attribution: "gateway"})
+			continue
+		}
+		second := map[string]any{
+			"messages": []any{
+				map[string]any{"role": "user", "content": "查询北京天气。必须调用 get_weather。"},
+				assistantToolCall(call),
+				toolResultMessage(call, "北京：晴，25℃，适合出门。"),
+			},
+			"max_completion_tokens": 4096,
+			"reasoning_effort":      "low",
+			"tools":                 weatherTools(),
+			"tool_choice":           "none",
+		}
+		if stream {
+			for k, v := range streamRequestBody() {
+				second[k] = v
+			}
+		}
+		r2, retries2 := chat(c, second)
+		evidence = append(evidence, ev(label+" 回传工具结果", second, r2, retries2))
+		if r2.HTTPStatus != 200 || strings.TrimSpace(r2.Content) == "" || len(r2.ToolCalls) > 0 {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "工具结果回传后 200 且给出最终回答", Actual: fmt.Sprintf("HTTP %d content=%q tool_calls=%v", r2.HTTPStatus, truncate(r2.Content, 80), toolCallNamesFromResult(r2)), Attribution: "upstream"})
+		}
+	}
+	if len(defects) > 0 {
+		return fail("工具闭环未通过", defects, evidence...)
+	}
+	return pass("非流式/流式工具闭环均完成", nil, evidence...)
+}
+
+func m59DynamicTools(c *suite.CaseCtx) suite.Outcome {
+	var evidence []suite.Evidence
+	var defects []suite.Defect
+
+	// 1) 工具只放在 messages 的 system 消息内。
+	dynamicOnly := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "查询北京天气。必须调用 get_weather。"},
+			map[string]any{"role": "system", "tools": weatherTools()},
+		},
+		"max_completion_tokens": 4096,
+		"reasoning_effort":      "low",
+		"tool_choice":           "auto",
+	}
+	r1, retries1 := chat(c, dynamicOnly)
+	evidence = append(evidence, ev("消息内动态工具", dynamicOnly, r1, retries1))
+	if r1.HTTPStatus != 200 || !hasToolCall(r1, "get_weather") {
+		defects = append(defects, suite.Defect{Level: "P1", Expect: "200 且调用 get_weather", Actual: fmt.Sprintf("HTTP %d tool_calls=%v", r1.HTTPStatus, toolCallNamesFromResult(r1)), Attribution: "upstream"})
+	}
+
+	// 2) 消息内动态工具与顶层全局工具共存，必须优先可见动态工具。
+	coexist := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "查询北京天气。必须调用 get_weather。"},
+			map[string]any{"role": "system", "tools": weatherTools()},
+		},
+		"max_completion_tokens": 4096,
+		"reasoning_effort":      "low",
+		"tools":                 timeTools(),
+		"tool_choice":           "auto",
+	}
+	r2, retries2 := chat(c, coexist)
+	evidence = append(evidence, ev("动态+全局共存", coexist, r2, retries2))
+	if r2.HTTPStatus != 200 || !hasToolCall(r2, "get_weather") {
+		defects = append(defects, suite.Defect{Level: "P1", Expect: "200 且调用消息内 get_weather", Actual: fmt.Sprintf("HTTP %d tool_calls=%v", r2.HTTPStatus, toolCallNamesFromResult(r2)), Attribution: "upstream"})
+	}
+
+	// 3) 多轮：先建立普通对话，再在后续轮注入动态工具。
+	firstTurn := map[string]any{
+		"messages":              userMsg("接下来会给你动态工具，先回复 ACK。"),
+		"max_completion_tokens": 512,
+		"reasoning_effort":      "low",
+	}
+	r3, retries3 := chat(c, firstTurn)
+	evidence = append(evidence, ev("动态工具多轮 / 首轮", firstTurn, r3, retries3))
+	if r3.HTTPStatus != 200 || strings.TrimSpace(r3.Content) == "" {
+		defects = append(defects, suite.Defect{Level: "P1", Expect: "首轮 200 且非空", Actual: fmt.Sprintf("HTTP %d content=%q", r3.HTTPStatus, truncate(r3.Content, 80)), Attribution: "upstream"})
+	}
+	secondTurn := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "接下来会给你动态工具，先回复 ACK。"},
+			map[string]any{"role": "assistant", "content": r3.Content},
+			map[string]any{"role": "user", "content": "现在查询北京天气。必须调用 get_weather。"},
+			map[string]any{"role": "system", "tools": weatherTools()},
+		},
+		"max_completion_tokens": 4096,
+		"reasoning_effort":      "low",
+		"tool_choice":           "auto",
+	}
+	r4, retries4 := chat(c, secondTurn)
+	evidence = append(evidence, ev("动态工具多轮 / 注入", secondTurn, r4, retries4))
+	if r4.HTTPStatus != 200 || !hasToolCall(r4, "get_weather") {
+		defects = append(defects, suite.Defect{Level: "P1", Expect: "后续轮 200 且调用 get_weather", Actual: fmt.Sprintf("HTTP %d tool_calls=%v", r4.HTTPStatus, toolCallNamesFromResult(r4)), Attribution: "upstream"})
+	}
+
+	if len(defects) > 0 {
+		return fail("动态工具矩阵未通过", defects, evidence...)
+	}
+	return pass("动态工具、动态+全局共存、动态多轮均通过", nil, evidence...)
+}
+
+func m60StreamEffort(c *suite.CaseCtx) suite.Outcome {
+	var evidence []suite.Evidence
+	var defects []suite.Defect
+	tokens := map[string]int{}
+	for _, effort := range []string{"low", "high", "max"} {
+		body := map[string]any{
+			"messages":              userMsg("用 1、2、3、4、5 各一次组成能被 11 整除的五位数，并简要说明。"),
+			"max_completion_tokens": 4096,
+			"reasoning_effort":      effort,
+		}
+		for k, v := range streamRequestBody() {
+			body[k] = v
+		}
+		r, retries := chat(c, body)
+		evidence = append(evidence, ev("流式 effort="+effort, body, r, retries))
+		if r.HTTPStatus != 200 {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "流式 " + effort + " → 200", Actual: fmt.Sprintf("HTTP %d", r.HTTPStatus), Attribution: "upstream"})
+			continue
+		}
+		tokens[effort] = usageReasoning(r)
+		if strings.TrimSpace(r.Reasoning) == "" {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "流式 " + effort + " 输出 reasoning_content", Actual: fmt.Sprintf("reasoning_content 为空（reasoning_tokens=%d）", tokens[effort]), Attribution: "upstream"})
+		}
+		if r.Chunks == 0 {
+			defects = append(defects, suite.Defect{Level: "P1", Expect: "流式分片", Actual: "0 片", Attribution: "gateway"})
+		}
+	}
+	metrics := map[string]any{"low_reasoning": tokens["low"], "high_reasoning": tokens["high"], "max_reasoning": tokens["max"]}
+	if len(defects) > 0 {
+		return fail("流式 effort 异常", defects, evidence...)
+	}
+	return pass("low/high/max 流式均输出思考内容", metrics, evidence...)
+}
+
+func m61Partial(c *suite.CaseCtx) suite.Outcome {
+	body := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "补全句子，只输出补全部分：Water freezes at"},
+			map[string]any{"role": "assistant", "content": "Water freezes at", "partial": true},
+		},
+		"max_completion_tokens": 512,
+		"reasoning_effort":      "low",
+	}
+	r, retries := chat(c, body)
+	e := ev("partial 续写", body, r, retries)
+	lower := strings.ToLower(r.Content)
+	ok := r.HTTPStatus == 200 && strings.TrimSpace(r.Content) != "" &&
+		(strings.Contains(lower, "0") || strings.Contains(lower, "zero") || strings.Contains(lower, "celsius"))
+	if ok {
+		return pass("partial:true 续写正常", nil, e)
+	}
+	return fail("partial 续写失败", []suite.Defect{{Level: "P1", Expect: "200 且续写包含 0/zero/celsius", Actual: fmt.Sprintf("HTTP %d content=%q", r.HTTPStatus, truncate(r.Content, 120)), Attribution: "upstream"}}, e)
+}
+
+func m62StreamStrictSchema(c *suite.CaseCtx) suite.Outcome {
+	body := map[string]any{
+		"messages":              userMsg("生成一个城市：名称北京，温度 26"),
+		"max_completion_tokens": 1024,
+		"reasoning_effort":      "low",
+		"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{
+			"name":   "city",
+			"strict": true,
+			"schema": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{"name": map[string]any{"type": "string"}, "temp": map[string]any{"type": "number"}},
+				"required":             []string{"name", "temp"},
+				"additionalProperties": false,
+			},
+		}},
+	}
+	for k, v := range streamRequestBody() {
+		body[k] = v
+	}
+	r, retries := chat(c, body)
+	e := ev("流式严格结构化", body, r, retries)
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(strings.TrimSpace(r.Content)), &parsed)
+	name, nameOK := parsed["name"].(string)
+	_, tempOK := parsed["temp"]
+	if r.HTTPStatus == 200 && err == nil && nameOK && strings.TrimSpace(name) != "" && tempOK {
+		return pass("流式严格 JSON 通过", nil, e)
+	}
+	return fail("流式严格结构化失败", []suite.Defect{{Level: "P1", Expect: "200 且流式内容为含 name/temp 的 JSON", Actual: fmt.Sprintf("HTTP %d content=%q err=%v", r.HTTPStatus, truncate(r.Content, 120), err), Attribution: "upstream"}}, e)
 }

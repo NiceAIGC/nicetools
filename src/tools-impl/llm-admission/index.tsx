@@ -1,44 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import type { MouseEvent } from "react";
 import {
-  Accordion,
-  AccordionItem,
   addToast,
   Button,
   Card,
   CardBody,
+  Checkbox,
   Chip,
-  Divider,
   Input,
-  Progress,
   Select,
   SelectItem,
   Spinner,
-  Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableColumn,
-  TableHeader,
-  TableRow,
 } from "@heroui/react";
 
 import {
   createRun,
-  exportMerged,
-  exportRun,
-  listRuns,
+  listDomainGroups,
   listSuites,
-  pauseRun,
-  resumeRun,
-  abortRun,
-  runDetail,
-  type CaseRow,
-  type ExportDetail,
-  type ExportFormat,
-  type ExportType,
-  type Run,
+  type SuiteCase,
   type SuiteInfo,
 } from "./api";
+import ReportPage from "./components/ReportPage";
+import {
+  caseCategory,
+  categoryLabel,
+  levelNote,
+} from "./lib/report";
 
 // 目标信息本地保存（含密钥，仅存本机浏览器），刷新/重开不丢。
 const TARGET_KEY = "llm-admission:target";
@@ -58,121 +45,48 @@ function loadTarget(): SavedTarget {
   }
 }
 
-const statusColor: Record<string, "primary" | "warning" | "success" | "danger" | "default"> = {
-  running: "primary",
-  pausing: "warning",
-  paused: "warning",
-  succeeded: "success",
-  failed: "danger",
-  aborted: "default",
-};
-
-const statusLabel: Record<string, string> = {
-  running: "运行中",
-  pausing: "暂停中",
-  paused: "已暂停",
-  succeeded: "已完成",
-  failed: "未通过",
-  aborted: "已终止",
-};
-
-const caseColor: Record<string, "success" | "danger" | "primary" | "default" | "warning"> = {
-  passed: "success",
-  failed: "danger",
-  running: "primary",
-  pending: "default",
-  exempt: "warning",
-  skipped: "warning",
-};
-
-const caseLabel: Record<string, string> = {
-  passed: "通过",
-  failed: "失败",
-  running: "运行中",
-  pending: "待执行",
-  exempt: "豁免",
-  skipped: "跳过",
-};
-
-const levelNote: Record<string, string> = {
-  P0: "P0 否决项",
-  P1: "P1 必过项",
-  P2: "P2 记录项",
-  P3: "P3 可选项",
-  gate: "前置闸门",
-  required: "P1 必过项",
-  record: "P2 记录项",
-  optional: "P3 可选项",
-};
-
-// 用例行的展开详情：实测摘要 + 用例说明 + 缺陷。
-function CaseDetail({ row, doc }: { row: CaseRow; doc?: { purpose: string; method: string; expect: string; ref: string } }) {
-  let defects: { level: string; expect: string; actual: string; attribution: string }[] = [];
+function normalizeGateway(raw: string): string {
+  const value = raw.trim();
+  if (!value) return value;
   try {
-    defects = JSON.parse(row.defects || "[]");
-  } catch { /* 忽略坏数据 */ }
-  return (
-    <div className="ml-24 flex flex-col gap-1 border-l-2 border-default-200 py-1 pl-3 text-xs text-default-500">
-      <p><span className="text-default-400">级别：</span>{levelNote[row.level] ?? row.level}</p>
-      {doc?.purpose && <p><span className="text-default-400">为什么测：</span>{doc.purpose}</p>}
-      {doc?.method && <p><span className="text-default-400">怎么测：</span>{doc.method}</p>}
-      {doc?.expect && <p><span className="text-default-400">预期：</span>{doc.expect}{doc.ref ? `（${doc.ref}）` : ""}</p>}
-      {row.summary && <p><span className="text-default-400">实测：</span>{row.summary}</p>}
-      {defects.map((d, i) => (
-        <p key={i}><span className="text-default-400">缺陷[{d.level}]：</span>期望 {d.expect}；实测 {d.actual}</p>
-      ))}
-    </div>
-  );
+    const u = new URL(value);
+    const path = u.pathname.replace(/\/$/, "");
+    if (!/\/v1$/i.test(path) && !/\/openai$/i.test(path)) u.pathname = `${path}/v1`;
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return value.replace(/\/$/, "");
+  }
+}
+
+function caseInPreset(cs: SuiteCase, preset: string): boolean {
+  if (cs.group === "gate" || !preset) return true;
+  if (preset === "video") return cs.capability === "video";
+  return cs.group === preset;
 }
 
 export default function LlmAdmission() {
   const [suites, setSuites] = useState<SuiteInfo[]>([]);
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [detail, setDetail] = useState<{ run: Run; cases: CaseRow[] } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<"new" | "reports">(() => {
+    try { return new URLSearchParams(window.location.search).get("view") === "reports" ? "reports" : "new"; } catch { return "new"; }
+  });
+  const [reportStats, setReportStats] = useState({ runs: 0, active: 0 });
+  const [knownModels, setKnownModels] = useState<{ name: string; count: number }[]>([]);
+  const [showKey, setShowKey] = useState(false);
 
   const savedTarget = useState(loadTarget)[0];
+  const [suiteId, setSuiteId] = useState("");
   const [baseURL, setBaseURL] = useState(savedTarget.base_url);
   const [apiKey, setAPIKey] = useState(savedTarget.api_key);
   const [channel, setChannel] = useState(savedTarget.channel);
-  const [suiteId, setSuiteId] = useState("");
   const [model, setModel] = useState(savedTarget.model);
-  const [tier, setTier] = useState("B");
-  const [declarations, setDeclarations] = useState<Record<string, boolean>>({});
-  const [overrides, setOverrides] = useState<Record<string, "skip" | "exempt">>({});
+  const [preset, setPreset] = useState("");
+  const [selectedCases, setSelectedCases] = useState<Set<string>>(new Set());
+  const [caseQuery, setCaseQuery] = useState("");
+  const [caseCategoryFilter, setCaseCategoryFilter] = useState("all");
+  const [casesOpen, setCasesOpen] = useState(false);
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [exportChannel, setExportChannel] = useState("");
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  // 默认：精简版 + 脱敏。
-  const [exDetail, setExDetail] = useState<ExportDetail>("brief");
-  const [exType, setExType] = useState<ExportType>("masked");
-  const [exFormat, setExFormat] = useState<ExportFormat>("pdf");
-  const [exportName, setExportName] = useState("");
-
-  const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
-  // 目标档位及其前置档位的全部用例（如选 M 则显示 F+M）。
-  const tierOrder = suite ? suite.tiers.map((t) => t.id) : [];
-  const activeTiers = suite ? suite.tiers.slice(0, tierOrder.indexOf(tier) + 1) : [];
-  const overrideCount = Object.keys(overrides).length;
-  const active = runs.find((r) => ["running", "pausing", "paused"].includes(r.status));
-  const detailId = detail?.run.id ?? null;
-
-  const refreshRuns = useCallback(async () => {
-    try {
-      setRuns(await listRuns());
-    } catch {
-      // 列表失败不打断页面
-    }
-  }, []);
-
-  const refreshDetail = useCallback(async (id: string) => {
-    try {
-      setDetail(await runDetail(id));
-    } catch {
-      // 同上
-    }
-  }, []);
 
   useEffect(() => {
     listSuites()
@@ -181,35 +95,159 @@ export default function LlmAdmission() {
         if (list[0]) {
           setSuiteId(list[0].id);
           setModel((m) => m || list[0].default_model);
-          setTier((t) => (list[0].tiers.some((x) => x.id === t) ? t : (list[0].tiers[0]?.id ?? "F")));
-          setDeclarations(Object.fromEntries(list[0].capabilities.map((c) => [c.key, false])));
         }
       })
       .catch((e) => addToast({ title: e.message, color: "danger" }))
       .finally(() => setLoading(false));
-    refreshRuns();
-  }, [refreshRuns]);
+  }, []);
 
-  // 有活跃任务或正在查看详情时轮询。
   useEffect(() => {
-    if (!active && !detailId) return;
-    const timer = setInterval(() => {
-      refreshRuns();
-      if (detailId) refreshDetail(detailId);
-    }, 2500);
-    return () => clearInterval(timer);
-  }, [active?.id, detailId, refreshRuns, refreshDetail]);
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (view === "reports") p.set("view", "reports");
+      else p.delete("view");
+      const next = `${window.location.pathname}${p.toString() ? `?${p}` : ""}`;
+      window.history.replaceState(null, "", next);
+    } catch {
+      // URL 不可写时忽略
+    }
+  }, [view]);
+
+  useEffect(() => {
+    listDomainGroups()
+      .then((res) => {
+        const counts = new Map<string, number>();
+        for (const group of res.groups) for (const run of group.runs) counts.set(run.model, (counts.get(run.model) ?? 0) + 1);
+        setKnownModels([...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)));
+      })
+      .catch(() => {
+        // 历史模型只做建议，不影响新建测试。
+      });
+  }, []);
+
+  const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
+  const groupRank = ["gate", "format", "cache", "latency"];
+  const allCases = suite?.cases ?? [];
+  const presetCases = allCases.filter((c) => caseInPreset(c, preset));
+  const visibleCases = allCases
+    .filter((c) => caseCategoryFilter === "all" || caseCategory(c) === caseCategoryFilter)
+    .filter((c) => {
+      const q = caseQuery.trim().toLowerCase();
+      return !q || `${c.id} ${c.name} ${c.doc.purpose}`.toLowerCase().includes(q);
+    })
+    .sort((a, b) => groupRank.indexOf(a.group) - groupRank.indexOf(b.group));
+  const defaultCaseIDs = new Set(
+    presetCases
+      .filter((c) => c.group === "gate" || !c.default_skip)
+      .map((c) => c.id),
+  );
+  const capabilityLabel = Object.fromEntries((suite?.capabilities ?? []).map((c) => [c.key, c.label]));
+
+  useEffect(() => {
+    if (!suite) return;
+    setSelectedCases(new Set(
+      suite.cases
+        .filter((c) => caseInPreset(c, preset))
+        .filter((c) => c.group === "gate" || !c.default_skip)
+        .map((c) => c.id),
+    ));
+    setLastClicked(null);
+  }, [suite?.id, preset]);
+
+  const toggleCase = (cs: SuiteCase, on: boolean) => {
+    setSelectedCases((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(cs.id);
+      else next.delete(cs.id);
+      return next;
+    });
+    setLastClicked(cs.id);
+  };
+
+  const selectAll = () => {
+    setSelectedCases((prev) => {
+      const next = new Set(prev);
+      for (const c of visibleCases) next.add(c.id);
+      return next;
+    });
+    setLastClicked(null);
+  };
+  const selectNone = () => {
+    setSelectedCases((prev) => {
+      const next = new Set(prev);
+      for (const c of visibleCases) next.delete(c.id);
+      return next;
+    });
+    setLastClicked(null);
+  };
+  const invertSelection = () => {
+    setSelectedCases((prev) => {
+      const next = new Set(prev);
+      for (const c of visibleCases) {
+        if (next.has(c.id)) next.delete(c.id);
+        else next.add(c.id);
+      }
+      return next;
+    });
+    setLastClicked(null);
+  };
+  const resetDefault = () => {
+    setSelectedCases(new Set(defaultCaseIDs));
+    setLastClicked(null);
+  };
+
+  const applyRange = (cs: SuiteCase, on: boolean) => {
+    if (!lastClicked) {
+      toggleCase(cs, on);
+      return;
+    }
+    const ids = visibleCases.map((c) => c.id);
+    const from = ids.indexOf(lastClicked);
+    const to = ids.indexOf(cs.id);
+    if (from < 0 || to < 0) {
+      toggleCase(cs, on);
+      return;
+    }
+    const [start, end] = from < to ? [from, to] : [to, from];
+    const next = new Set(selectedCases);
+    for (let i = start; i <= end; i++) {
+      if (on) next.add(ids[i]);
+      else next.delete(ids[i]);
+    }
+    setSelectedCases(next);
+    setLastClicked(cs.id);
+  };
+
+  const handleRowClick = (e: MouseEvent, cs: SuiteCase) => {
+    if ((e.target as HTMLElement).closest("[data-case-checkbox]")) return;
+    const on = !selectedCases.has(cs.id);
+    if (e.shiftKey) applyRange(cs, on);
+    else toggleCase(cs, on);
+  };
 
   const submit = async () => {
     if (!suite) return;
     setSubmitting(true);
     try {
-      const run = await createRun({ base_url: baseURL, api_key: apiKey, model, channel, suite: suite.id, tier, declarations, case_overrides: overrides });
+      const selectedIDs = [...selectedCases].filter((id) => allCases.some((c) => c.id === id));
+      if (selectedIDs.length === 0) {
+        addToast({ title: "至少选择一个用例", color: "warning" });
+        return;
+      }
+      await createRun({
+        base_url: baseURL,
+        api_key: apiKey,
+        model,
+        channel,
+        suite: suite.id,
+        preset,
+        declarations: {},
+        case_overrides: {},
+        case_ids: selectedIDs,
+      });
       localStorage.setItem(TARGET_KEY, JSON.stringify({ base_url: baseURL, api_key: apiKey, model, channel }));
-      addToast({ title: "测试已启动" });
-      await refreshRuns();
-      setDetail({ run, cases: [] });
-      refreshDetail(run.id);
+      addToast({ title: "测试已启动，正在加入队列" });
+      setView("reports");
     } catch (e) {
       addToast({ title: (e as Error).message, color: "danger" });
     } finally {
@@ -217,281 +255,158 @@ export default function LlmAdmission() {
     }
   };
 
-  const act = async (fn: (id: string) => Promise<unknown>, id: string, done: string) => {
-    try {
-      await fn(id);
-      addToast({ title: done });
-      await refreshRuns();
-      if (detail?.run.id === id) await refreshDetail(id);
-    } catch (e) {
-      addToast({ title: (e as Error).message, color: "danger" });
-    }
-  };
-
-  if (loading) {
-    return <div className="flex justify-center py-16"><Spinner /></div>;
-  }
-  if (!suite) {
-    return <p className="py-16 text-center text-sm text-default-500">没有可用的测试标准</p>;
-  }
+  if (loading) return <div className="flex justify-center py-16"><Spinner /></div>;
+  if (!suite) return <p className="py-16 text-center text-sm text-default-500">没有可用的测试标准</p>;
 
   return (
-    <div className="flex flex-col gap-6">
-      <Card>
-        <CardBody className="gap-4">
-          <div>
-            <h2 className="text-lg font-semibold">新建测试</h2>
-            <p className="mt-1 text-xs text-default-400">{suite.name} · 三档顺序执行，失败不终止，最终汇总裁决</p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input label="渠道名称" placeholder="如：张三的 K3 渠道" value={channel} onValueChange={setChannel} description="写入报告，导出时可再改" />
-            <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} isRequired />
-            <Input label="密钥" type="password" placeholder="sk-…（仅存本机浏览器）" value={apiKey} onValueChange={setAPIKey} isRequired />
-            <Input label="模型名称" value={model} onValueChange={setModel} isRequired />
-            <Select
-              label="测试标准"
-              selectedKeys={[suite.id]}
-              onChange={(e) => {
-                const next = suites.find((s) => s.id === e.target.value);
-                if (!next) return;
-                setSuiteId(next.id);
-                setModel(next.default_model);
-                setTier(next.tiers[0]?.id ?? "F");
-                setDeclarations(Object.fromEntries(next.capabilities.map((c) => [c.key, false])));
-              }}
-            >
-              {suites.map((s) => (
-                <SelectItem key={s.id}>{s.name}</SelectItem>
-              ))}
-            </Select>
-            <Select label="目标档位" selectedKeys={[tier]} onChange={(e) => setTier(e.target.value)}>
-              {suite.tiers.map((t) => (
-                <SelectItem key={t.id} description={t.hint}>
-                  {t.name}
-                </SelectItem>
-              ))}
-            </Select>
-          </div>
-          <div className="flex flex-col gap-2">
-            <span className="text-sm text-default-500">能力验证（勾选 = 验证该能力，对应用例必须全过；不勾 = 豁免不测）</span>
-            <div className="flex flex-wrap gap-x-6 gap-y-2">
-              {suite.capabilities.map((cap) => (
-                <Switch
-                  key={cap.key}
-                  size="sm"
-                  isSelected={declarations[cap.key] ?? false}
-                  onValueChange={(v) => setDeclarations((d) => ({ ...d, [cap.key]: v }))}
-                >
-                  {cap.label}
-                </Switch>
-              ))}
-            </div>
-          </div>
-          <Accordion isCompact>
-            <AccordionItem
-              key="overrides"
-              aria-label="用例自定义"
-              title={<span className="text-sm">用例自定义{overrideCount > 0 ? `（已调整 ${overrideCount} 项）` : ""}</span>}
-              subtitle={<span className="text-xs text-default-400">逐项选择跳过（不测）或豁免（测但不计入失败）</span>}
-            >
-              <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pb-2">
-                {activeTiers.map((t) => (
-                  <div key={t.id} className="flex flex-col gap-1">
-                    <span className="pt-1 text-xs font-semibold text-default-500">{t.name}</span>
-                    {t.cases.map((cs) => (
-                      <div key={cs.id} className="flex items-center gap-2 text-sm">
-                        <span className="w-16 shrink-0 font-mono text-xs text-default-400">{t.id}-{cs.id}</span>
-                        <span className="min-w-0 flex-1 truncate" title={cs.doc.purpose}>{cs.name}</span>
-                        {(cs.level === "P0" || cs.level === "required") && (
-                          <Chip size="sm" variant="bordered" color={cs.level === "P0" ? "danger" : "default"}>{cs.level === "P0" ? "P0" : "必过"}</Chip>
-                        )}
-                        <Select
-                          aria-label={`${cs.name} 执行方式`}
-                          size="sm"
-                          className="w-24"
-                          selectedKeys={[overrides[cs.id] ?? "default"]}
-                          onChange={(e) => {
-                            const value = e.target.value as "skip" | "exempt" | "default";
-                            setOverrides((prev) => {
-                              const next = { ...prev };
-                              if (value === "default") delete next[cs.id];
-                              else next[cs.id] = value;
-                              return next;
-                            });
-                          }}
-                        >
-                          <SelectItem key="default">默认</SelectItem>
-                          <SelectItem key="skip">不测</SelectItem>
-                          <SelectItem key="exempt">豁免</SelectItem>
-                        </Select>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </AccordionItem>
-          </Accordion>
-          <div className="flex items-center gap-3">
-            <Button
-              color="primary"
-              isLoading={submitting}
-              isDisabled={!baseURL || !apiKey || !model || !!active}
-              onPress={submit}
-            >
-              开始测试
-            </Button>
-            {active && <span className="text-xs text-warning">已有任务进行中，同一时间只能跑一个测试</span>}
-          </div>
-        </CardBody>
-      </Card>
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">大模型准入测试</h2>
+          <p className="mt-1 text-xs text-default-400">{suite.name} · 按分组执行，失败不终止，最终汇总裁决</p>
+        </div>
+        <div className="ml-auto inline-flex rounded-full border border-default-200 bg-default-50 p-1">
+          <Button size="sm" radius="full" variant={view === "new" ? "solid" : "light"} color={view === "new" ? "primary" : "default"} onPress={() => setView("new")}>提交测试</Button>
+          <Button size="sm" radius="full" variant={view === "reports" ? "solid" : "light"} color={view === "reports" ? "primary" : "default"} onPress={() => setView("reports")}>
+            测试报告{reportStats.runs > 0 ? ` (${reportStats.runs})` : ""}
+          </Button>
+        </div>
+      </div>
 
-      {detail && (
-        <Card>
-          <CardBody className="gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-lg font-semibold">任务详情</h2>
-              <Chip size="sm" color={statusColor[detail.run.status]} variant="flat">
-                {statusLabel[detail.run.status]}
-              </Chip>
-              {detail.run.verdict && (
-                <Chip size="sm" color={detail.run.verdict.startsWith("0 项") ? "success" : "danger"} variant="solid">
-                  {detail.run.verdict}
-                </Chip>
-              )}
-              <span className="text-xs text-default-400">{detail.run.model} @ {detail.run.base_url}</span>
-              <div className="ml-auto flex gap-2">
-                {detail.run.status === "running" && (
-                  <Button size="sm" variant="flat" onPress={() => act(pauseRun, detail.run.id, "已请求暂停")}>暂停</Button>
-                )}
-                {detail.run.status === "paused" && (
-                  <Button size="sm" color="primary" variant="flat" onPress={() => act(resumeRun, detail.run.id, "已继续")}>继续</Button>
-                )}
-                {["running", "pausing", "paused"].includes(detail.run.status) && (
-                  <Button size="sm" color="danger" variant="light" onPress={() => act(abortRun, detail.run.id, "已终止")}>终止</Button>
-                )}
-                <Select aria-label="内容" size="sm" className="w-28" selectedKeys={[exDetail]} onChange={(e) => setExDetail(e.target.value as ExportDetail)}>
-                  <SelectItem key="full">详细版</SelectItem>
-                  <SelectItem key="brief">精简版</SelectItem>
-                </Select>
-                <Select aria-label="脱敏" size="sm" className="w-24" selectedKeys={[exType]} onChange={(e) => setExType(e.target.value as ExportType)}>
-                  <SelectItem key="full">不脱敏</SelectItem>
-                  <SelectItem key="masked">脱敏</SelectItem>
-                </Select>
-                <Select aria-label="格式" size="sm" className="w-24" selectedKeys={[exFormat]} onChange={(e) => setExFormat(e.target.value as ExportFormat)}>
-                  <SelectItem key="pdf">PDF</SelectItem>
-                  <SelectItem key="md">MD</SelectItem>
-                  <SelectItem key="json">JSON</SelectItem>
-                </Select>
-                <Input label="文件名" size="sm" className="w-40" placeholder="默认自动命名" value={exportName} onValueChange={setExportName} />
-                <Button size="sm" color="primary" variant="flat" onPress={() => exportRun(detail.run.id, exType, exFormat, exDetail, exportChannel || undefined, exportName.trim() || undefined)}>导出</Button>
+      {view === "new" ? (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <Card shadow="none" className="border border-default-200">
+            <CardBody className="gap-4">
+              <div>
+                <h3 className="text-lg font-semibold">测试目标</h3>
+                <p className="mt-1 text-xs text-default-400">网关地址与模型进入报告；密钥只存本机浏览器。</p>
               </div>
-            </div>
-            <Progress
-              size="sm"
-              value={detail.run.total_cases ? (detail.run.done_cases / detail.run.total_cases) * 100 : 0}
-              label={`进度 ${detail.run.done_cases}/${detail.run.total_cases}`}
-            />
-            {detail.run.stop_reason && <p className="text-xs text-default-400">{detail.run.stop_reason}</p>}
-            <Divider />
-            <div className="flex flex-col gap-1">
-              {detail.cases.map((row) => (
-                <div key={row.id}>
-                  <div
-                    className="flex cursor-pointer items-center gap-2 py-1 text-sm hover:bg-default-50"
-                    onClick={() =>
-                      setExpanded((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(row.id)) next.delete(row.id);
-                        else next.add(row.id);
-                        return next;
-                      })
-                    }
-                  >
-                    <Chip size="sm" variant="flat" color={caseColor[row.status]} className="w-16 justify-center">
-                      {caseLabel[row.status]}
-                    </Chip>
-                    <span className="w-20 shrink-0 font-mono text-xs text-default-400">{row.tier}-{row.case_id}</span>
-                    <span className="shrink-0">{row.name}</span>
-                    <Chip size="sm" variant="bordered" color={row.level === "P0" ? "danger" : "default"}>
-                      {levelNote[row.level] ?? row.level}
-                    </Chip>
-                    <span className="min-w-0 flex-1 truncate text-xs text-default-400">{row.summary}</span>
-                    {row.duration_ms > 0 && <span className="text-xs text-default-300">{(row.duration_ms / 1000).toFixed(1)}s</span>}
-                    <span className="text-xs text-default-400">{expanded.has(row.id) ? "▲" : "▼"}</span>
-                  </div>
-                  {expanded.has(row.id) && (
-                    <CaseDetail
-                      row={row}
-                      doc={suite.tiers.find((t) => t.id === row.tier)?.cases.find((cs) => cs.id === row.case_id)?.doc}
-                    />
-                  )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input label="名称 / 渠道" placeholder="如：yropc K3" value={channel} onValueChange={setChannel} description="显示在报告域名组上" />
+                <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} onBlur={() => setBaseURL((v) => normalizeGateway(v))} isRequired />
+                <Input
+                  label="密钥"
+                  type={showKey ? "text" : "password"}
+                  placeholder="sk-…（仅存本机浏览器）"
+                  value={apiKey}
+                  onValueChange={setAPIKey}
+                  isRequired
+                  endContent={
+                    <button
+                      type="button"
+                      aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                      className="text-xs text-default-400 hover:text-default-600"
+                      onClick={() => setShowKey((v) => !v)}
+                    >
+                      {showKey ? "隐藏" : "显示"}
+                    </button>
+                  }
+                />
+                <div>
+                  <Input
+                    label="模型名称"
+                    list="known-models"
+                    value={model}
+                    onValueChange={setModel}
+                    description={knownModels.length ? "下拉选择历史测试模型，按测试次数降序；也可直接输入" : "可直接输入模型名称"}
+                    isRequired
+                  />
+                  <datalist id="known-models">
+                    {knownModels.map((item) => <option key={item.name} value={item.name}>{`${item.name}（${item.count} 次）`}</option>)}
+                  </datalist>
                 </div>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-      )}
+                <Select label="测试标准" selectedKeys={[suite.id]} onChange={(e) => {
+                  const next = suites.find((s) => s.id === e.target.value);
+                  if (!next) return;
+                  setSuiteId(next.id);
+                  setModel(next.default_model);
+                  setPreset("");
+                }}>
+                  {suites.map((s) => <SelectItem key={s.id}>{s.name}</SelectItem>)}
+                </Select>
+                <Select label="测试范围" selectedKeys={[preset || "all"]} onChange={(e) => setPreset(e.target.value === "all" ? "" : e.target.value)}>
+                  {suite.presets.map((p) => <SelectItem key={p.key || "all"} description={p.hint}>{p.label}</SelectItem>)}
+                </Select>
+              </div>
 
-      <Card>
-        <CardBody className="gap-3">
-          <h2 className="text-lg font-semibold">历史任务</h2>
-          <div className="flex flex-wrap items-end gap-3">
-            <Input
-              label="报告渠道名称"
-              size="sm"
-              className="w-56"
-              placeholder="默认取任务上的渠道名"
-              value={exportChannel}
-              onValueChange={setExportChannel}
-            />
-            {selected.size > 0 && (
-              <>
-                <span className="text-xs text-default-400">已选 {selected.size} 个任务</span>
-                <Input label="文件名" size="sm" className="w-40" placeholder="默认自动命名" value={exportName} onValueChange={setExportName} />
-                <Button size="sm" color="primary" variant="flat" onPress={() => exportMerged([...selected], exType, exFormat, exDetail, exportChannel || undefined, exportName.trim() || undefined)}>合并导出</Button>
-              </>
-            )}
+              <div className="rounded-large border border-default-200">
+                <button type="button" className="flex w-full items-center gap-3 px-4 py-3 text-left" onClick={() => setCasesOpen((v) => !v)} aria-expanded={casesOpen}>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">用例范围</p>
+                    <p className="text-xs text-default-400">已选 {selectedCases.size} 项；默认跳过可选/长耗时用例</p>
+                  </div>
+                  <Chip size="sm" variant="flat">{casesOpen ? "收起" : "展开"}</Chip>
+                </button>
+                {casesOpen && (
+                  <div className="border-t border-default-200">
+                    <div className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center">
+                      <Input size="sm" className="w-full sm:w-64" placeholder="搜索用例 ID / 名称 / 说明" value={caseQuery} onValueChange={setCaseQuery} isClearable />
+                      <Select aria-label="用例类别" size="sm" className="w-full sm:w-36" selectedKeys={[caseCategoryFilter]} onChange={(e) => setCaseCategoryFilter(e.target.value)}>
+                        <SelectItem key="all">全部类别</SelectItem>
+                        <SelectItem key="video">视频</SelectItem>
+                        <SelectItem key="image">图片</SelectItem>
+                        <SelectItem key="latency">延迟</SelectItem>
+                        <SelectItem key="cache">缓存</SelectItem>
+                        <SelectItem key="format">格式</SelectItem>
+                        <SelectItem key="gate">闸门</SelectItem>
+                      </Select>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="flat" onPress={selectAll}>全选</Button>
+                        <Button size="sm" variant="flat" onPress={selectNone}>全不选</Button>
+                        <Button size="sm" variant="flat" onPress={invertSelection}>反选</Button>
+                        <Button size="sm" variant="light" onPress={resetDefault}>恢复默认</Button>
+                      </div>
+                    </div>
+                    <p className="px-3 pb-2 text-xs text-default-400">全选/全不选/反选只作用于当前筛选结果；Shift + 点击可范围选择。勾选能力用例会自动声明对应能力。</p>
+                    <div className="max-h-[60vh] overflow-y-auto">
+                      {visibleCases.length === 0 && <p className="px-4 py-8 text-center text-sm text-default-400">没有匹配的用例</p>}
+                      {visibleCases.map((cs) => {
+                        const checked = selectedCases.has(cs.id);
+                        return (
+                          <div key={cs.id} data-case-id={cs.id} className={`flex cursor-pointer items-start gap-3 border-b border-default-100 px-3 py-3 last:border-0 hover:bg-default-50 sm:px-4 ${checked ? "bg-default-50/60" : ""}`} onClick={(e) => handleRowClick(e, cs)}>
+                            <span data-case-checkbox className="pt-0.5" onClick={(e) => e.stopPropagation()}>
+                              <Checkbox aria-label={`${cs.name} 测试`} isSelected={checked} onValueChange={(on) => toggleCase(cs, on)} />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-xs text-default-400">{cs.id}</span>
+                                <span className="min-w-0 max-w-full truncate text-sm font-medium sm:max-w-[26rem]">{cs.name}</span>
+                                <Chip size="sm" variant="flat">{categoryLabel[caseCategory(cs)]}</Chip>
+                                <Chip size="sm" variant="bordered" color={cs.level === "P0" ? "danger" : cs.level === "P1" || cs.level === "required" ? "default" : "warning"}>
+                                  {cs.level === "gate" ? "闸门" : levelNote[cs.level] ?? cs.level}
+                                </Chip>
+                                {cs.default_skip && <Chip size="sm" color="warning" variant="flat">可选/长耗时</Chip>}
+                                {cs.capability && <Chip size="sm" variant="flat">能力：{capabilityLabel[cs.capability] ?? cs.capability}</Chip>}
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-xs text-default-400">{cs.doc.purpose}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </CardBody>
+          </Card>
+
+          <div className="flex h-fit flex-col gap-3 rounded-large border border-default-200 bg-default-50/60 p-4 xl:sticky xl:top-20">
+            <h3 className="text-sm font-semibold">提交摘要</h3>
+            <div className="flex flex-col gap-1 text-sm">
+              <div className="flex justify-between gap-3"><span className="text-default-400">名称</span><span className="truncate text-right">{channel || "未命名"}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">域名</span><span className="truncate text-right font-mono">{(() => { try { return new URL(baseURL).host || "—"; } catch { return "—"; } })()}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">模型</span><span className="truncate text-right">{model || "—"}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">范围</span><span className="text-right">{preset ? suite.presets.find((p) => p.key === preset)?.label : "全部"}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">用例</span><span className="tabular-nums">{selectedCases.size} 项</span></div>
+            </div>
+            <p className="text-xs text-default-400">提交后自动排队；暂停任务不会阻塞队列。</p>
+            <Button color="primary" isLoading={submitting} isDisabled={!baseURL || !apiKey || !model || selectedCases.size === 0} onPress={submit}>开始测试</Button>
+            {reportStats.active > 0 && <p className="text-xs text-warning">当前有 {reportStats.active} 个活跃任务，新任务会排队。</p>}
           </div>
-          <Table
-            aria-label="历史任务"
-            removeWrapper
-            selectionMode="multiple"
-            selectedKeys={selected}
-            onSelectionChange={(keys) => setSelected(keys === "all" ? new Set(runs.map((r) => r.id)) : new Set([...keys].map(String)))}
-          >
-            <TableHeader>
-              <TableColumn>时间</TableColumn>
-              <TableColumn>渠道</TableColumn>
-              <TableColumn>模型</TableColumn>
-              <TableColumn>档位</TableColumn>
-              <TableColumn>进度</TableColumn>
-              <TableColumn>状态</TableColumn>
-              <TableColumn>操作</TableColumn>
-            </TableHeader>
-            <TableBody emptyContent="还没有测试记录">
-              {runs.map((run) => (
-                <TableRow key={run.id}>
-                  <TableCell className="whitespace-nowrap text-xs">{new Date(run.created_at).toLocaleString()}</TableCell>
-                  <TableCell className="max-w-32 truncate">{run.channel || "—"}</TableCell>
-                  <TableCell className="max-w-40 truncate">{run.model}</TableCell>
-                  <TableCell>{run.tier}</TableCell>
-                  <TableCell>{run.done_cases}/{run.total_cases}</TableCell>
-                  <TableCell>
-                    <Chip size="sm" variant="flat" color={statusColor[run.status]}>
-                      {run.verdict || statusLabel[run.status]}
-                    </Chip>
-                  </TableCell>
-                  <TableCell>
-                    <Button size="sm" variant="light" onPress={() => { setDetail({ run, cases: [] }); refreshDetail(run.id); }}>
-                      查看
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardBody>
-      </Card>
+        </div>
+      ) : (
+        <ReportPage suites={suites} onStats={setReportStats} />
+      )}
     </div>
   );
 }

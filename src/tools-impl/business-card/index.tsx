@@ -263,7 +263,7 @@ export default function BusinessCard() {
                 </Switch>
                 <Input
                   label="水印文字"
-                  placeholder="MINGSHU"
+                  placeholder="XXXX"
                   size="sm"
                   value={state.style.wmText}
                   onValueChange={(value) => setStyle({ wmText: value })}

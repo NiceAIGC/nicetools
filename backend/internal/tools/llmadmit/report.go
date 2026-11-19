@@ -11,7 +11,7 @@ import (
 )
 
 // Watermark 是所有导出报告的归属水印。
-const Watermark = "niceaigc"
+const Watermark = "niceaigc.cn"
 
 // report 是导出文档结构（JSON 即此结构的序列化）。
 type report struct {
@@ -21,6 +21,8 @@ type report struct {
 	Standard     string          `json:"standard"`
 	Environment  environment     `json:"environment"`
 	Verdict      string          `json:"verdict"`
+	Grade        string          `json:"grade,omitempty"`
+	PassRate     float64         `json:"pass_rate,omitempty"`
 	StopReason   string          `json:"stop_reason,omitempty"`
 	Summary      summary         `json:"summary"`
 	Declarations map[string]bool `json:"declarations"`
@@ -30,7 +32,7 @@ type report struct {
 	Cases   []caseRow   `json:"cases"`
 }
 
-// summary 是报告摘要：总体与分档位的用例计数、未通过级别分布（参考基准报告的总览页）。
+// summary 是报告摘要：总体与分组用例计数、未通过级别分布。
 type summary struct {
 	Total         int            `json:"total"`
 	Passed        int            `json:"passed"`
@@ -38,11 +40,12 @@ type summary struct {
 	Exempt        int            `json:"exempt"`
 	Skipped       int            `json:"skipped"`
 	FailedByLevel map[string]int `json:"failed_by_level"`
-	Tiers         []tierSummary  `json:"tiers"`
+	Groups        []groupSummary `json:"groups"`
 }
 
-type tierSummary struct {
-	Tier    string `json:"tier"`
+type groupSummary struct {
+	Group   string `json:"group"`
+	Label   string `json:"label"`
 	Total   int    `json:"total"`
 	Passed  int    `json:"passed"`
 	Failed  int    `json:"failed"`
@@ -50,64 +53,156 @@ type tierSummary struct {
 	Skipped int    `json:"skipped"`
 }
 
+// groupOrder 是分组展示顺序；未登记分组按字典序追加在后。
+var groupOrder = []struct{ key, label string }{
+	{suite.GroupGate, "前置闸门"},
+	{suite.GroupFormat, "格式与协议"},
+	{suite.GroupCache, "缓存"},
+	{suite.GroupLatency, "性能基准"},
+}
+
+func groupRank(key string) int {
+	for i, g := range groupOrder {
+		if g.key == key {
+			return i
+		}
+	}
+	return len(groupOrder)
+}
+
+func groupLabel(key string) string {
+	for _, g := range groupOrder {
+		if g.key == key {
+			return g.label
+		}
+	}
+	if strings.HasPrefix(key, "legacy-") {
+		return "历史档位 " + strings.TrimPrefix(key, "legacy-")
+	}
+	if key == "" {
+		return "未分组"
+	}
+	return key
+}
+
+// gradeForRate 是报告评级：A+ ≥95%，A 90–95%，B 80–90%，C 70–80%，其余 D。
+func gradeForRate(rate float64) string {
+	switch {
+	case rate >= 95:
+		return "A+"
+	case rate >= 90:
+		return "A"
+	case rate >= 80:
+		return "B"
+	case rate >= 70:
+		return "C"
+	default:
+		return "D"
+	}
+}
+
+// scoreRun 把用例结果折算成通过率与评级；跳过/豁免不计分母。
+func scoreRun(run *Run, rows []CaseResult) {
+	passed, assessed := 0, 0
+	for _, row := range rows {
+		switch row.Status {
+		case "passed":
+			passed++
+			assessed++
+		case "failed":
+			assessed++
+		}
+	}
+	run.Passed = passed
+	run.Assessed = assessed
+	run.Failed = assessed - passed
+	if assessed == 0 {
+		run.PassRate = 0
+		run.Grade = "—"
+		return
+	}
+	run.PassRate = float64(passed) / float64(assessed) * 100
+	run.Grade = gradeForRate(run.PassRate)
+}
+
 // buildSummary 从用例行统计摘要。
 func buildSummary(rows []CaseResult) summary {
 	s := summary{FailedByLevel: map[string]int{}}
-	byTier := map[string]*tierSummary{}
-	order := []string{}
+	byGroup := map[string]*groupSummary{}
 	for _, row := range rows {
 		s.Total++
-		ts, ok := byTier[row.Tier]
-		if !ok {
-			ts = &tierSummary{Tier: row.Tier}
-			byTier[row.Tier] = ts
-			order = append(order, row.Tier)
+		group := row.Group
+		if group == "" && row.LegacyTier != "" {
+			group = "legacy-" + row.LegacyTier
 		}
-		ts.Total++
+		if group == "" {
+			group = "legacy-unknown"
+		}
+		gs, ok := byGroup[group]
+		if !ok {
+			gs = &groupSummary{Group: group, Label: groupLabel(group)}
+			byGroup[group] = gs
+		}
+		gs.Total++
 		switch row.Status {
 		case suite.StatusPassed:
 			s.Passed++
-			ts.Passed++
+			gs.Passed++
 		case suite.StatusFailed:
 			s.Failed++
-			ts.Failed++
+			gs.Failed++
 			s.FailedByLevel[normalizeLevel(row.Level)]++
 		case suite.StatusExempt:
 			s.Exempt++
-			ts.Exempt++
+			gs.Exempt++
 		case suite.StatusSkipped:
 			s.Skipped++
-			ts.Skipped++
+			gs.Skipped++
 		}
 	}
-	for _, id := range order {
-		s.Tiers = append(s.Tiers, *byTier[id])
+	for _, g := range groupOrder {
+		if gs, ok := byGroup[g.key]; ok {
+			s.Groups = append(s.Groups, *gs)
+			delete(byGroup, g.key)
+		}
+	}
+	rest := make([]string, 0, len(byGroup))
+	for key := range byGroup {
+		rest = append(rest, key)
+	}
+	sort.Strings(rest)
+	for _, key := range rest {
+		s.Groups = append(s.Groups, *byGroup[key])
 	}
 	return s
 }
 
 type mergedRun struct {
 	ID         string `json:"id"`
-	Tier       string `json:"tier"`
+	Preset     string `json:"preset"`
+	PresetName string `json:"preset_name,omitempty"`
 	Verdict    string `json:"verdict"`
 	FinishedAt string `json:"finished_at,omitempty"`
 }
 
 type environment struct {
-	Channel   string `json:"channel,omitempty"`
-	BaseURL   string `json:"base_url"`
-	Model     string `json:"model"`
-	Suite     string `json:"suite"`
-	Tier      string `json:"tier"`
-	CreatedBy string `json:"created_by"`
-	StartedAt string `json:"started_at,omitempty"`
-	EndedAt   string `json:"finished_at,omitempty"`
-	Timezone  string `json:"timezone"`
+	TaskID     string `json:"task_id,omitempty"`
+	Channel    string `json:"channel,omitempty"`
+	BaseURL    string `json:"base_url"`
+	Model      string `json:"model"`
+	Suite      string `json:"suite"`
+	Preset     string `json:"preset"`
+	PresetName string `json:"preset_name"`
+	CreatedBy  string `json:"created_by"`
+	StartedAt  string `json:"started_at,omitempty"`
+	EndedAt    string `json:"finished_at,omitempty"`
+	Timezone   string `json:"timezone"`
 }
 
 type caseRow struct {
 	CaseID      string          `json:"case_id"`
-	Tier        string          `json:"tier"`
+	Group       string          `json:"group"`
+	GroupLabel  string          `json:"group_label"`
 	Name        string          `json:"name"`
 	Level       string          `json:"level"`
 	LevelNote   string          `json:"level_note"` // 必过/豁免等含义说明
@@ -148,7 +243,7 @@ func maskURL(raw string) string {
 	return scheme + "***" + path
 }
 
-// docMap 返回套件「档位/用例 → 说明」索引，用于报告注入用例文档。
+// docMap 返回套件「用例 → 说明」索引，用于报告注入用例文档。
 func (m *Module) docMap(suiteID string) map[string]suite.CaseDoc {
 	docs := map[string]suite.CaseDoc{}
 	if m.runner == nil {
@@ -158,10 +253,8 @@ func (m *Module) docMap(suiteID string) map[string]suite.CaseDoc {
 	if !ok {
 		return docs
 	}
-	for _, tier := range s.Tiers {
-		for _, c := range tier.Cases {
-			docs[tier.ID+"/"+c.ID] = c.Doc
-		}
+	for _, c := range s.Cases {
+		docs[c.ID] = c.Doc
 	}
 	return docs
 }
@@ -177,7 +270,7 @@ func levelNote(level string) string {
 	case "P2", "record":
 		return "P2 记录项（产出数据，不影响通过）"
 	case "P3", "optional":
-		return "P3 可选项（声明支持才必须达到，未声明可豁免）"
+		return "P3 可选项（声明支持才必须达到，未声明可跳过）"
 	case "gate":
 		return "前置闸门（不通过则整次测试无效）"
 	}
@@ -263,6 +356,10 @@ func enrichEvidence(raw string, baseURL string, masked bool) json.RawMessage {
 
 // buildReport 装配单任务导出；channel 非空时覆盖任务上的渠道名。
 func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel string, brief ...bool) report {
+	presetName := m.presetName(run.Suite, run.Preset)
+	if run.Preset == "" && run.LegacyTier != "" {
+		presetName = "旧档位 " + run.LegacyTier
+	}
 	rep := report{
 		Watermark:  Watermark,
 		Masked:     masked,
@@ -270,13 +367,15 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 		Verdict:    run.Verdict,
 		StopReason: run.StopReason,
 		Environment: environment{
-			Channel:   channel,
-			BaseURL:   run.BaseURL,
-			Model:     run.Model,
-			Suite:     run.Suite,
-			Tier:      run.Tier,
-			CreatedBy: run.CreatedBy,
-			Timezone:  time.Local.String(),
+			TaskID:     run.ID,
+			Channel:    channel,
+			BaseURL:    run.BaseURL,
+			Model:      run.Model,
+			Suite:      run.Suite,
+			Preset:     run.Preset,
+			PresetName: presetName,
+			CreatedBy:  run.CreatedBy,
+			Timezone:   "Asia/Shanghai (UTC+08:00)",
 		},
 	}
 	if rep.Environment.Channel == "" {
@@ -288,16 +387,23 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 		rep.Environment.Channel = "已隐去"
 	}
 	if run.StartedAt != nil {
-		rep.Environment.StartedAt = run.StartedAt.Format(time.RFC3339)
+		rep.Environment.StartedAt = run.StartedAt.In(reportLocation).Format(time.RFC3339)
 	}
 	if run.FinishedAt != nil {
-		rep.Environment.EndedAt = run.FinishedAt.Format(time.RFC3339)
+		rep.Environment.EndedAt = run.FinishedAt.In(reportLocation).Format(time.RFC3339)
 	}
 	_ = json.Unmarshal([]byte(run.Declarations), &rep.Declarations)
 	isBrief := len(brief) > 0 && brief[0]
 	rep.Cases, rep.Defects = reportRows(rows, run.BaseURL, masked, m.docMap(run.Suite), isBrief)
 	rep.Brief = isBrief
 	rep.Summary = buildSummary(rows)
+	_, assessed, rate := compliance(rep.Summary)
+	if assessed > 0 {
+		rep.PassRate = rate
+		rep.Grade = gradeForRate(rate)
+	} else {
+		rep.Grade = "—"
+	}
 	return rep
 }
 
@@ -317,16 +423,16 @@ func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult,
 	}
 	rep.Merged = []mergedRun{}
 	for _, run := range runs {
-		item := mergedRun{ID: run.ID, Tier: run.Tier, Verdict: run.Verdict}
+		item := mergedRun{ID: run.ID, Preset: run.Preset, PresetName: m.presetName(run.Suite, run.Preset), Verdict: run.Verdict}
 		if run.FinishedAt != nil {
-			item.FinishedAt = run.FinishedAt.Format(time.RFC3339)
+			item.FinishedAt = run.FinishedAt.In(reportLocation).Format(time.RFC3339)
 		}
 		rep.Merged = append(rep.Merged, item)
 	}
 	byKey := map[string]CaseResult{}
 	for _, run := range runs {
 		for _, row := range rowsByID[run.ID] {
-			byKey[row.Tier+"/"+row.CaseID] = row
+			byKey[row.CaseID] = row
 		}
 	}
 	merged := make([]CaseResult, 0, len(byKey))
@@ -334,31 +440,53 @@ func (m *Module) buildMergedReport(runs []Run, rowsByID map[string][]CaseResult,
 		merged = append(merged, row)
 	}
 	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Tier != merged[j].Tier {
-			return tierRank(merged[i].Tier) < tierRank(merged[j].Tier)
+		if a, b := groupRank(merged[i].Group), groupRank(merged[j].Group); a != b {
+			return a < b
 		}
-		return merged[i].Seq < merged[j].Seq
+		if merged[i].Seq != merged[j].Seq {
+			return merged[i].Seq < merged[j].Seq
+		}
+		return merged[i].CaseID < merged[j].CaseID
 	})
 	isBrief := len(brief) > 0 && brief[0]
 	rep.Cases, rep.Defects = reportRows(merged, newest.BaseURL, masked, m.docMap(newest.Suite), isBrief)
 	rep.Brief = isBrief
 	rep.Summary = buildSummary(merged)
+	_, assessed, rate := compliance(rep.Summary)
+	if assessed > 0 {
+		rep.PassRate = rate
+		rep.Grade = gradeForRate(rate)
+	} else {
+		rep.Grade = "—"
+	}
 	rep.Verdict = mergedVerdict(rep.Cases)
 	return rep
 }
 
-// tierRank 档位排序；兼容历史库中的 F/B/M/S 旧档位。
-func tierRank(tier string) int {
-	switch tier {
-	case "准入", "F":
-		return 0
-	case "B":
-		return 1
-	case "M":
-		return 2
-	default: // 压测 / S / 未知
-		return 3
+// presetName 返回预设可读名；历史任务无新预设字段时按旧档位或全测展示。
+func (m *Module) presetName(suiteID, preset string) string {
+	if preset == "" {
+		return "全部测试"
 	}
+	if m.runner != nil {
+		if s, ok := m.runner.suites[suiteID]; ok {
+			for _, p := range s.Presets {
+				if string(p.Key) == preset {
+					return p.Label
+				}
+			}
+		}
+	}
+	if preset == "format" {
+		return "只测格式与协议"
+	}
+	if preset == "cache" {
+		return "只测缓存"
+	}
+	if preset == "latency" {
+		return "只测延迟与吞吐"
+	}
+	return preset
 }
 
 // mergedVerdict 重算合并视图裁决：按级别统计未通过项。
@@ -375,14 +503,31 @@ func mergedVerdict(cases []caseRow) string {
 // reportRows 把用例行转为导出结构；masked 时脱敏。
 func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]suite.CaseDoc, brief ...bool) ([]caseRow, []defectRow) {
 	isBrief := len(brief) > 0 && brief[0]
+	// 详情按分组顺序输出（闸门 → 格式 → 缓存 → 性能），组内保持执行序号；
+	// 这样短分组不会孤零零落到最后一页。
+	rows = append([]CaseResult(nil), rows...)
+	sort.SliceStable(rows, func(i, j int) bool {
+		if a, b := groupRank(rows[i].Group), groupRank(rows[j].Group); a != b {
+			return a < b
+		}
+		return rows[i].Seq < rows[j].Seq
+	})
 	var cases []caseRow
 	var defects []defectRow
 	for _, row := range rows {
+		group := row.Group
+		if group == "" && row.LegacyTier != "" {
+			group = "legacy-" + row.LegacyTier
+		}
+		if group == "" {
+			group = "legacy-unknown"
+		}
 		cr := caseRow{
-			CaseID: row.CaseID, Tier: row.Tier, Name: row.Name, Level: row.Level, LevelNote: levelNote(row.Level),
+			CaseID: row.CaseID, Group: group, GroupLabel: groupLabel(group),
+			Name: row.Name, Level: row.Level, LevelNote: levelNote(row.Level),
 			Status: row.Status, Summary: row.Summary, HTTPStatus: row.HTTPStatus,
 			RequestID: row.RequestID, DurationMs: row.DurationMs, Retries: row.Retries,
-			Doc:     docs[row.Tier+"/"+row.CaseID],
+			Doc:     docs[row.CaseID],
 			Metrics: json.RawMessage(row.Metrics), Defects: json.RawMessage(row.Defects),
 			EvidenceSHA: row.EvidenceSHA,
 		}
@@ -398,6 +543,12 @@ func reportRows(rows []CaseResult, baseURL string, masked bool, docs map[string]
 		if masked {
 			cr.RequestID = ""
 			cr.Summary = redact(cr.Summary, baseURL)
+			var metrics map[string]any
+			if json.Unmarshal([]byte(row.Metrics), &metrics) == nil {
+				if data, err := json.Marshal(redactAny(metrics, baseURL)); err == nil {
+					cr.Metrics = data
+				}
+			}
 			// 缺陷原文也含目标地址，随用例行一并脱敏。
 			var rowDefects []suite.Defect
 			if json.Unmarshal([]byte(row.Defects), &rowDefects) == nil {
@@ -440,11 +591,35 @@ func redact(s, baseURL string) string {
 	return out
 }
 
+// redactAny 递归脱敏 metrics 中的字符串；端点/URL 常藏在右上角指标里。
+func redactAny(v any, baseURL string) any {
+	switch t := v.(type) {
+	case string:
+		return redact(t, baseURL)
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = redactAny(item, baseURL)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[k] = redactAny(item, baseURL)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // renderMarkdown 把报告渲染为可读格式（§7），每页首行与结尾嵌入水印。
 func renderMarkdown(rep report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "<!-- %s -->\n", Watermark)
-	fmt.Fprintf(&b, "# %s 准入测试报告\n\n> 本报告由 **%s** 准入测试系统生成\n\n", rep.Standard, Watermark)
+	if rep.Watermark != "" {
+		fmt.Fprintf(&b, "<!-- %s -->\n", rep.Watermark)
+	}
+	fmt.Fprintf(&b, "# %s 测试报告\n\n> 本报告由 **%s** 准入测试系统生成\n\n", rep.Standard, Watermark)
 	if rep.Masked {
 		b.WriteString("> ⚠️ 脱敏版：已隐去测试目标地址、密钥与 request_id\n\n")
 	}
@@ -456,12 +631,17 @@ func renderMarkdown(rep report) string {
 	if channel == "" {
 		channel = "（未命名渠道）"
 	}
-	fmt.Fprintf(&b, "| 项 | 值 |\n|---|---|\n| 渠道 | %s |\n| 网关 | `%s` |\n| 模型 | `%s` |\n| 档位 | %s |\n| 结论 | **%s** |\n| 时段 | %s ~ %s (%s) |\n\n",
-		channel, rep.Environment.BaseURL, rep.Environment.Model, rep.Environment.Tier, rep.Verdict, rep.Environment.StartedAt, rep.Environment.EndedAt, rep.Environment.Timezone)
+	passed, assessed, rate := compliance(rep.Summary)
+	rateText := "—"
+	if assessed > 0 {
+		rateText = fmt.Sprintf("%.1f%%（通过 %d / 考核 %d 项）", rate, passed, assessed)
+	}
+	fmt.Fprintf(&b, "| 项 | 值 |\n|---|---|\n| 任务 ID | `%s` |\n| 渠道 | %s |\n| 网关 | `%s` |\n| 模型 | `%s` |\n| 范围 | %s |\n| 通过率 | **%s** |\n| 评级 | **%s** |\n| 时段 | %s ~ %s (%s) |\n\n",
+		rep.Environment.TaskID, channel, rep.Environment.BaseURL, rep.Environment.Model, rep.Environment.PresetName, rateText, rep.Grade, rep.Environment.StartedAt, rep.Environment.EndedAt, rep.Environment.Timezone)
 	if len(rep.Merged) > 0 {
-		fmt.Fprintf(&b, "本报告合并自 %d 次测试：\n\n| 任务 | 档位 | 完成时间 | 结论 |\n|---|---|---|---|\n", len(rep.Merged))
+		fmt.Fprintf(&b, "本报告合并自 %d 次测试：\n\n| 任务 | 范围 | 完成时间 | 结论 |\n|---|---|---|---|\n", len(rep.Merged))
 		for _, item := range rep.Merged {
-			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", item.ID, item.Tier, item.FinishedAt, item.Verdict)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", item.ID, item.PresetName, item.FinishedAt, item.Verdict)
 		}
 		b.WriteString("\n")
 	}
@@ -482,11 +662,11 @@ func renderMarkdown(rep report) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n## 用例一览\n\n")
-	currentTier := ""
+	currentGroup := ""
 	for _, c := range rep.Cases {
-		if c.Tier != currentTier {
-			currentTier = c.Tier
-			fmt.Fprintf(&b, "\n### %s 档\n\n| 用例 | 名称 | 级别 | 结论 | HTTP | 耗时(ms) |\n|---|---|---|---|---|---|\n", currentTier)
+		if c.Group != currentGroup {
+			currentGroup = c.Group
+			fmt.Fprintf(&b, "\n### %s\n\n| 用例 | 名称 | 级别 | 结论 | HTTP | 耗时(ms) |\n|---|---|---|---|---|---|\n", c.GroupLabel)
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %d |\n",
 			c.CaseID, c.Name, c.LevelNote, statusText(c.Status), c.HTTPStatus, c.DurationMs)
@@ -495,15 +675,17 @@ func renderMarkdown(rep report) string {
 	for _, c := range rep.Cases {
 		renderCaseDetail(&b, c, rep.Masked)
 	}
-	fmt.Fprintf(&b, "\n---\n\n*generated by %s · %s*\n", Watermark, Watermark)
+	if rep.Watermark != "" {
+		fmt.Fprintf(&b, "\n---\n\n*generated by %s · %s*\n", rep.Watermark, rep.Watermark)
+	}
 	return b.String()
 }
 
-// renderSummaryMD 渲染摘要区：总计、未通过级别分布、分档位计数表。
+// renderSummaryMD 渲染摘要区：总计、未通过级别分布、分分组计数表。
 func renderSummaryMD(b *strings.Builder, rep report) {
 	b.WriteString("## 摘要\n\n")
 	s := rep.Summary
-	fmt.Fprintf(b, "共 **%d** 项：✅ 通过 %d · ❌ 失败 %d · ⚠️ 豁免 %d · ⏭ 跳过 %d\n\n",
+	fmt.Fprintf(b, "共 **%d** 项：✅ 通过 %d · ❌ 失败 %d · ⏭ 能力跳过 %d · ⏭ 手动跳过 %d\n\n",
 		s.Total, s.Passed, s.Failed, s.Exempt, s.Skipped)
 	if len(s.FailedByLevel) > 0 {
 		b.WriteString("未通过级别分布：")
@@ -514,76 +696,200 @@ func renderSummaryMD(b *strings.Builder, rep report) {
 		}
 		b.WriteString("\n\n")
 	}
-	b.WriteString("| 档位 | 用例数 | 通过 | 失败 | 豁免 | 跳过 |\n|---|---|---|---|---|---|\n")
-	for _, t := range s.Tiers {
-		fmt.Fprintf(b, "| %s | %d | %d | %d | %d | %d |\n", t.Tier, t.Total, t.Passed, t.Failed, t.Exempt, t.Skipped)
+	b.WriteString("| 分组 | 用例数 | 通过 | 失败 | 能力跳过 | 手动跳过 |\n|---|---|---|---|---|---|\n")
+	for _, g := range s.Groups {
+		fmt.Fprintf(b, "| %s | %d | %d | %d | %d | %d |\n", g.Label, g.Total, g.Passed, g.Failed, g.Exempt, g.Skipped)
 	}
 	b.WriteString("\n")
 }
 
-// renderChartsMD 渲染文本条形图（与 PDF 图表同源：TTFT 对比与缓存命中率）。
+// renderChartsMD 输出和 PDF 同源的延迟分位、吞吐/token 表、缓存曲线和 TTFT 散点。
 func renderChartsMD(b *strings.Builder, cases []caseRow) {
-	type bar struct {
-		label    string
-		p50, p90 float64
-	}
-	var ttfts []bar
-	var caches []struct {
-		label string
-		rate  float64
-	}
+	var rows []benchmarkRowMD
+	var caches []cachePerformanceRow
 	for _, c := range cases {
 		var m map[string]any
-		if json.Unmarshal(c.Metrics, &m) != nil {
+		if json.Unmarshal(c.Metrics, &m) != nil || len(m) == 0 {
 			continue
 		}
-		p50, ok1 := m["ttft_p50_ms"].(float64)
-		p90, ok2 := m["ttft_p90_ms"].(float64)
-		if ok1 && ok2 && p50 > 0 {
-			ttfts = append(ttfts, bar{chartLabel(c), p50, p90})
+		if hasPerformanceMetrics(m) {
+			rows = append(rows, benchmarkRowMD{label: c.CaseID, m: m})
 		}
-		if rate, ok := m["cache_hit_rate_percent"].(float64); ok {
-			caches = append(caches, struct {
-				label string
-				rate  float64
-			}{chartLabel(c), rate})
+		for _, key := range sortedKeys(m) {
+			if strings.HasPrefix(key, "target_") || (key != "cache_hit_rate_percent" && !strings.HasSuffix(key, "_hit_rate_percent")) {
+				continue
+			}
+			rate, ok := numberMetric(m, key)
+			if !ok {
+				continue
+			}
+			prefix := strings.TrimSuffix(key, "_hit_rate_percent")
+			cachedKey, promptKey, label := "cached_tokens", "prompt_tokens", c.CaseID
+			if prefix != "cache" {
+				cachedKey, promptKey = prefix+"_cached_tokens", prefix+"_prompt_tokens"
+				label += " · " + prefix
+			}
+			caches = append(caches, cachePerformanceRow{label: label, rate: rate, cachedTokens: numberText(m, cachedKey, 0), promptTokens: numberText(m, promptKey, 0)})
 		}
-	}
-	textBar := func(frac float64, width int) string {
-		filled := int(frac*float64(width) + 0.5)
-		if filled > width {
-			filled = width
-		}
-		return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	}
-	if len(ttfts) >= 2 {
-		b.WriteString("\n## TTFT 对比（P50 / P90，ms）\n\n```\n")
-		max := 1.0
-		for _, t := range ttfts {
-			if t.p90 > max {
-				max = t.p90
+		if curve, ok := m["decay_curve"].([]any); ok {
+			for _, item := range curve {
+				p, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				sec, hasSec := numberMetric(p, "seconds")
+				rate, hasRate := numberMetric(p, "hit_rate_percent")
+				if hasSec && hasRate {
+					caches = append(caches, cachePerformanceRow{label: fmt.Sprintf("%s · TTL %.0fs", c.CaseID, sec), rate: rate, cachedTokens: numberText(p, "cached_tokens", 0), promptTokens: numberText(p, "prompt_tokens", 0)})
+				}
 			}
 		}
-		for _, t := range ttfts {
-			fmt.Fprintf(b, "%-14s %s %s %.0f/%.0f\n", t.label, textBar(t.p50/max, 24), textBar(t.p90/max, 24), t.p50, t.p90)
-		}
-		b.WriteString("```\n")
 	}
-	if len(caches) >= 2 {
-		b.WriteString("\n## 缓存命中率（token 口径，%）\n\n```\n")
-		for _, c := range caches {
-			fmt.Fprintf(b, "%-14s %s %.1f%%\n", c.label, textBar(c.rate/100, 40), c.rate)
+	if len(rows) > 0 {
+		b.WriteString("## 性能对比\n\n")
+		fmt.Fprintf(b, "**%s**\n\n", benchmarkVerdictAllMD(rows))
+		b.WriteString("颜色说明：🟢 达到门槛 · 🔴 未达到门槛 · ⚪ 无门槛/数据不足；每列数值格式为「实测 / 门槛」。\n\n")
+		b.WriteString("| 场景 | 输入 | TTFT P50 | TTFT P95 | TPOT P50 | E2E P90 | 成功率 | 缓存命中 | 直观结论 |\n|---|---:|---:|---:|---:|---:|---:|---:|---|\n")
+		for _, r := range rows {
+			m := r.m
+			fmt.Fprintf(b, "| %s | %s tok | %s | %s | %s | %s | %s | %s | %s |\n", r.label, benchmarkInputText(m),
+				scoredMetricMD(m, "ttft_p50_ms", "target_ttft_p50_ms", 0, "ms", false),
+				scoredMetricMD(m, "ttft_p95_ms", "target_ttft_p95_ms", 0, "ms", false),
+				scoredMetricMD(m, "tpot_p50_ms", "target_tpot_p50_ms", 1, "ms/token", false),
+				scoredMetricMD(m, "e2e_p90_ms", "target_e2e_p90_ms", 0, "ms", false),
+				scoredMetricMD(m, "success_rate_percent", "target_success_rate_percent", 1, "%", true),
+				scoredMetricMD(m, "cache_hit_rate_percent", "target_cache_hit_rate_percent", 1, "%", true),
+				benchmarkVerdictMD(m))
 		}
-		b.WriteString("```\n")
+		budget := numberText(rows[0].m, "output_budget_tokens", 0)
+		if budget == "—" {
+			budget = "默认"
+		}
+		fmt.Fprintf(b, "\n本次基准输出预算：%s tokens/请求。\n\n", budget)
+		b.WriteString("| 场景 | 样本 | 输出速度 | ITL P95 | 错误率 | 输入总量 | 输出总量 | 缓存读取 |\n|---|---:|---:|---:|---:|---:|---:|---:|\n")
+		for _, r := range rows {
+			m := r.m
+			fmt.Fprintf(b, "| %s | %s | %s token/s | %s ms | %s | %s | %s | %s |\n", r.label,
+				numberText(m, "samples", 0), numberText(m, "otps_p50", 1), numberText(m, "itl_p95_ms", 1), percentMetricText(m, "error_rate_percent"),
+				numberText(m, "input_tokens_total", 0), numberText(m, "output_tokens_total", 0), numberText(m, "cache_read_tokens_total", 0))
+		}
+		b.WriteString("\n")
+	}
+	if len(caches) > 0 {
+		b.WriteString("## 缓存命中\n\n")
+		b.WriteString("绿色 ≥80%，橙色 50–79.9%，红色 <50%。\n\n| 场景 | 命中率 | 直观状态 | cached tokens | prompt tokens |\n|---|---:|---|---:|---:|\n")
+		for _, c := range caches {
+			state := "🟢 稳定"
+			if c.rate < 80 {
+				state = "🟠 偏低"
+			}
+			if c.rate < 50 {
+				state = "🔴 很低"
+			}
+			fmt.Fprintf(b, "| %s | %.1f%% | %s | %s | %s |\n", c.label, c.rate, state, c.cachedTokens, c.promptTokens)
+		}
+		b.WriteString("\n")
 	}
 }
 
-// chartLabel 图表行标签：用例 ID 已含档位前缀时不重复拼接。
-func chartLabel(c caseRow) string {
-	if strings.HasPrefix(c.CaseID, c.Tier) {
-		return c.CaseID
+// benchmarkRowMD 是 Markdown 图表用的最小场景视图。
+type benchmarkRowMD struct {
+	label string
+	m     map[string]any
+}
+
+// benchmarkVerdictAllMD 与 PDF 的一眼结论同源：多少档位四项延迟全部达标。
+func benchmarkVerdictAllMD(rows []benchmarkRowMD) string {
+	total, allPass := 0, 0
+	for _, row := range rows {
+		checked, failed := false, false
+		for _, item := range []struct{ key, target string }{
+			{"ttft_p50_ms", "target_ttft_p50_ms"},
+			{"ttft_p95_ms", "target_ttft_p95_ms"},
+			{"tpot_p50_ms", "target_tpot_p50_ms"},
+			{"e2e_p90_ms", "target_e2e_p90_ms"},
+		} {
+			value, hasValue := numberMetric(row.m, item.key)
+			target, hasTarget := numberMetric(row.m, item.target)
+			if !hasValue || !hasTarget {
+				continue
+			}
+			checked = true
+			if value > target {
+				failed = true
+			}
+		}
+		if !checked {
+			continue
+		}
+		total++
+		if !failed {
+			allPass++
+		}
 	}
-	return c.Tier + "-" + c.CaseID
+	if total == 0 {
+		return "⚪ 暂无可判定的延迟门槛"
+	}
+	if allPass == total {
+		return fmt.Sprintf("🟢 %d 档四项延迟全部达标", total)
+	}
+	return fmt.Sprintf("🔴 %d 档中仅 %d 档四项延迟全部达标", total, allPass)
+}
+
+func scoredMetricMD(metrics map[string]any, key, targetKey string, decimals int, suffix string, higher bool) string {
+	value, ok := numberMetric(metrics, key)
+	if !ok {
+		return "⚪ —"
+	}
+	text := fmt.Sprintf("%."+fmt.Sprint(decimals)+"f%s", value, suffix)
+	if target, hasTarget := numberMetric(metrics, targetKey); targetKey != "" && hasTarget {
+		passed := value >= target
+		if !higher {
+			passed = value <= target
+		}
+		if passed {
+			return "🟢 " + text
+		}
+		return "🔴 " + text
+	}
+	return "⚪ " + text
+}
+
+func benchmarkVerdictMD(metrics map[string]any) string {
+	checks := 0
+	passed := 0
+	for _, item := range []struct {
+		key, target string
+		higher      bool
+	}{
+		{"ttft_p50_ms", "target_ttft_p50_ms", false},
+		{"ttft_p95_ms", "target_ttft_p95_ms", false},
+		{"tpot_p50_ms", "target_tpot_p50_ms", false},
+		{"e2e_p90_ms", "target_e2e_p90_ms", false},
+		{"success_rate_percent", "target_success_rate_percent", true},
+		{"cache_hit_rate_percent", "target_cache_hit_rate_percent", true},
+	} {
+		value, ok := numberMetric(metrics, item.key)
+		target, hasTarget := numberMetric(metrics, item.target)
+		if !ok || !hasTarget {
+			continue
+		}
+		checks++
+		pass := value >= target
+		if !item.higher {
+			pass = value <= target
+		}
+		if pass {
+			passed++
+		}
+	}
+	if checks == 0 {
+		return "⚪ 暂无完整判定"
+	}
+	if passed == checks {
+		return fmt.Sprintf("🟢 达标（%d/%d）", passed, checks)
+	}
+	return fmt.Sprintf("🔴 需关注（%d/%d）", passed, checks)
 }
 
 func statusText(status string) string {
@@ -593,7 +899,7 @@ func statusText(status string) string {
 	case "failed":
 		return "❌ 失败"
 	case "exempt":
-		return "⚠️ 豁免"
+		return "⏭ 跳过"
 	case "skipped":
 		return "⏭ 跳过"
 	case "running":
@@ -605,7 +911,7 @@ func statusText(status string) string {
 
 // renderCaseDetail 渲染单用例详情：说明、判据、级别含义、实测摘要、请求（脱敏 curl）与响应原文。
 func renderCaseDetail(b *strings.Builder, c caseRow, masked bool) {
-	fmt.Fprintf(b, "### %s-%s %s\n\n", c.Tier, c.CaseID, c.Name)
+	fmt.Fprintf(b, "### %s %s\n\n", c.CaseID, c.Name)
 	fmt.Fprintf(b, "- **级别**：%s\n- **结论**：%s", c.LevelNote, statusText(c.Status))
 	if c.HTTPStatus != 0 {
 		fmt.Fprintf(b, "（HTTP %d）", c.HTTPStatus)

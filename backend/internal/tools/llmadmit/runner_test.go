@@ -187,15 +187,18 @@ func fixtureSuite() suite.Suite {
 	}
 	return suite.Suite{
 		ID: "fixture", Name: "测试套件", DefaultModel: "kimi-k3",
-		Tiers: []suite.Tier{
-			{ID: "一", Name: "准入测试", Cases: []suite.Case{
-				{ID: "G1", Name: "闸门", Level: suite.LevelGate, Run: gate},
-				{ID: "T-01", Name: "身份", Level: suite.LevelP0, Run: identity},
-				{ID: "T-02", Name: "探测", Level: suite.LevelRequired, Run: probe},
-				{ID: "T-08", Name: "记录", Level: suite.LevelRecord, Run: probe},
-				{ID: "T-10", Name: "图像", Level: suite.LevelP0, Run: probe},
-			}},
-			{ID: "二", Name: "压力测试", Cases: []suite.Case{{ID: "L-01", Name: "压测", Level: suite.LevelRequired, Run: probe}}},
+		Cases: []suite.Case{
+			{ID: "G1", Name: "闸门", Level: suite.LevelGate, Group: suite.GroupGate, Run: gate},
+			{ID: "T-01", Name: "身份", Level: suite.LevelP0, Group: suite.GroupFormat, Run: identity},
+			{ID: "T-02", Name: "探测", Level: suite.LevelRequired, Group: suite.GroupFormat, Run: probe},
+			{ID: "T-08", Name: "记录", Level: suite.LevelRecord, Group: suite.GroupFormat, Run: probe},
+			{ID: "T-10", Name: "图像", Level: suite.LevelP0, Group: suite.GroupFormat, Run: probe},
+			{ID: "L-01", Name: "压测", Level: suite.LevelRequired, Group: suite.GroupLatency, Run: probe},
+		},
+		Presets: []suite.Preset{
+			{Key: suite.PresetAll, Label: "全部"},
+			{Key: suite.PresetFormat, Label: "格式"},
+			{Key: suite.PresetLatency, Label: "延迟"},
 		},
 	}
 }
@@ -234,14 +237,17 @@ func waitStatus(t *testing.T, r *Runner, runID string, deadline time.Duration, w
 	return Run{}
 }
 
-// F 档全量：假网关下应整体通过，用例全部有结论。
-func TestRunnerFTierPasses(t *testing.T) {
+// 格式分组：假网关下应整体通过，用例全部有结论。
+func TestRunnerFormatPasses(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if run.TotalCases != 5 {
+		t.Fatalf("format preset total_cases=%d, want 5 (gate + four format cases)", run.TotalCases)
 	}
 	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed, runAborted)
 	if final.Verdict != "0 项未通过" {
@@ -249,10 +255,22 @@ func TestRunnerFTierPasses(t *testing.T) {
 		st.DB.Where("run_id = ?", run.ID).Order("seq ASC").Find(&rows)
 		for _, row := range rows {
 			if row.Status != suite.StatusPassed && row.Status != suite.StatusSkipped && row.Status != suite.StatusExempt {
-				t.Logf("%s-%s %s: %s (%s)", row.Tier, row.CaseID, row.Name, row.Status, row.Summary)
+				t.Logf("%s-%s %s: %s (%s)", row.Group, row.CaseID, row.Name, row.Status, row.Summary)
 			}
 		}
 		t.Fatalf("verdict=%s want 通过", final.Verdict)
+	}
+	var selected []CaseResult
+	if err := st.DB.Where("run_id = ?", run.ID).Find(&selected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 5 {
+		t.Fatalf("persisted cases=%d, want 5", len(selected))
+	}
+	for _, row := range selected {
+		if row.Group != suite.GroupGate && row.Group != suite.GroupFormat {
+			t.Fatalf("format preset included %s group case %s", row.Group, row.CaseID)
+		}
 	}
 	if final.DoneCases != final.TotalCases {
 		t.Fatalf("done=%d total=%d", final.DoneCases, final.TotalCases)
@@ -265,21 +283,99 @@ func TestRunnerFTierPasses(t *testing.T) {
 	}
 }
 
-// 单飞：活跃任务存在时第二个任务 409。
-func TestRunnerSingleFlight(t *testing.T) {
-	server := fakeGateway(150 * time.Millisecond)
+// 显式用例选择：只跑指定用例 + 闸门，不受 preset 分组影响。
+func TestRunnerCustomCaseSelection(t *testing.T) {
+	server := fakeGateway(0)
 	defer server.Close()
-	r, _ := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
+	r, st := setupRunner(t)
+	run, err := r.StartWithCases("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil, []string{"T-02"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
-	problem, ok := err.(*service.Error)
-	if !ok || problem.Status != 409 {
-		t.Fatalf("second start err=%v want 409", err)
+	if run.TotalCases != 2 {
+		t.Fatalf("custom total=%d, want 2 (gate + T-02)", run.TotalCases)
 	}
-	_ = r.Abort(run.ID, "tester")
+	if run.CaseIDs != "T-02" {
+		t.Fatalf("case_ids=%q, want T-02", run.CaseIDs)
+	}
+	waitStatus(t, r, run.ID, 30*time.Second, runSucceeded, runFailed)
+	var rows []CaseResult
+	if err := st.DB.Where("run_id = ?", run.ID).Order("seq ASC").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, row := range rows {
+		got = append(got, row.CaseID)
+	}
+	if strings.Join(got, ",") != "G1,T-02" {
+		t.Fatalf("rows=%v, want [G1 T-02]", got)
+	}
+	_, err = r.StartWithCases("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil, []string{"NOPE"})
+	if err == nil {
+		t.Fatal("invalid case id should fail")
+	}
+}
+
+// 排队：并发固定为 1，第二个任务先进入 queued，第一个结束后自动开始。
+func TestRunnerQueuesSecondRun(t *testing.T) {
+	server := fakeGateway(150 * time.Millisecond)
+	defer server.Close()
+	r, _ := setupRunner(t)
+	target := suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}
+	first, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != runQueued {
+		t.Fatalf("second status=%s want queued", second.Status)
+	}
+	waitStatus(t, r, first.ID, 30*time.Second, runSucceeded, runFailed)
+	final := waitStatus(t, r, second.ID, 60*time.Second, runSucceeded, runFailed)
+	if final.Status != runSucceeded && final.Status != runFailed {
+		t.Fatalf("second final=%s", final.Status)
+	}
+	if final.DoneCases != final.TotalCases {
+		t.Fatalf("second done=%d total=%d", final.DoneCases, final.TotalCases)
+	}
+}
+
+// 暂停任务不占用执行槽：后续 queued 任务应能自动开始，而不是等暂停任务“继续”。
+func TestRunnerPausedDoesNotBlockQueue(t *testing.T) {
+	server := fakeGateway(120 * time.Millisecond)
+	defer server.Close()
+	r, _ := setupRunner(t)
+	target := suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}
+	first, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if err := r.Pause(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, r, first.ID, 30*time.Second, runPaused)
+
+	second, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 暂停任务不恢复，第二个任务也必须自动跑完。
+	final := waitStatus(t, r, second.ID, 60*time.Second, runSucceeded, runFailed)
+	if final.DoneCases != final.TotalCases {
+		t.Fatalf("queued run done=%d total=%d", final.DoneCases, final.TotalCases)
+	}
+	if got, _ := r.loadRun(first.ID); got.Status != runPaused {
+		t.Fatalf("first status=%s want paused", got.Status)
+	}
+	// 清理：继续第一个任务，避免测试结束时留下 paused 状态。
+	if err := r.Resume(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, r, first.ID, 60*time.Second, runSucceeded, runFailed)
 }
 
 // 暂停/继续：暂停在用例边界生效，恢复后跑完。
@@ -287,7 +383,7 @@ func TestRunnerPauseResume(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +404,39 @@ func TestRunnerPauseResume(t *testing.T) {
 	}
 }
 
-// 档位失败不终止：P0 失败后当档剩余用例继续，任务跑完，裁决不通过。
-func TestRunnerTierFailureContinues(t *testing.T) {
+// 已终止任务可以继续：从剩余 pending 用例接着跑，不重复已完成用例。
+func TestRunnerResumeAborted(t *testing.T) {
+	server := fakeGateway(150 * time.Millisecond)
+	defer server.Close()
+	r, st := setupRunner(t)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if err := r.Abort(run.ID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, r, run.ID, 30*time.Second, runAborted)
+	var pending int64
+	st.DB.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", run.ID, []string{suite.StatusPending, suite.StatusRunning}).Count(&pending)
+	if pending == 0 {
+		t.Fatal("测试没有留下待继续的用例，无法验证恢复")
+	}
+	if err := r.Resume(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	final := waitStatus(t, r, run.ID, 60*time.Second, runSucceeded, runFailed)
+	if final.DoneCases != final.TotalCases {
+		t.Fatalf("继续后进度不完整: %d/%d", final.DoneCases, final.TotalCases)
+	}
+	if err := r.Resume(run.ID); err == nil {
+		t.Fatal("已结束任务不应再次继续")
+	}
+}
+
+// 失败不终止：P0 失败后剩余用例继续，任务跑完，裁决不通过。
+func TestRunnerFailureContinues(t *testing.T) {
 	// 假网关身份自报错误 → F-02 P0 失败。
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/models" {
@@ -321,7 +448,7 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,9 +465,9 @@ func TestRunnerTierFailureContinues(t *testing.T) {
 	if pending > 0 {
 		t.Fatalf("%d 个用例未执行", pending)
 	}
-	// 每档判定落库（按级别计数）。
-	if !strings.Contains(final.TierResults, `"一":"`) || !strings.Contains(final.TierResults, "未通过") {
-		t.Fatalf("tier_results=%s", final.TierResults)
+	// 裁决按级别计数落库。
+	if !strings.Contains(final.Verdict, "未通过") {
+		t.Fatalf("verdict=%s", final.Verdict)
 	}
 }
 
@@ -351,7 +478,7 @@ func TestRunnerGateFailureInvalid(t *testing.T) {
 	}))
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, nil)
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +499,7 @@ func TestRunnerCaseOverrides(t *testing.T) {
 	server := fakeGateway(0)
 	defer server.Close()
 	r, st := setupRunner(t)
-	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{},
+	run, err := r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{},
 		map[string]string{"T-10": "skip", "T-08": "exempt"})
 	if err != nil {
 		t.Fatal(err)
@@ -397,12 +524,12 @@ func TestRunnerCaseOverrides(t *testing.T) {
 		t.Fatalf("F-01=%s want passed", status["T-01"])
 	}
 	// 非法覆盖值与未知用例在创建期拒绝。
-	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, map[string]string{"T-01": "bogus"})
+	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, map[string]string{"T-01": "bogus"})
 	problem, ok := err.(*service.Error)
 	if !ok || problem.Status != 400 {
 		t.Fatalf("非法覆盖值 err=%v want 400", err)
 	}
-	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, "一", "", map[string]bool{}, map[string]string{"X-99": "skip"})
+	_, err = r.Start("tester", fixtureSuite(), suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}, suite.PresetFormat, "", map[string]bool{}, map[string]string{"X-99": "skip"})
 	if _, ok := err.(*service.Error); !ok {
 		t.Fatalf("未知用例 err=%v want 400", err)
 	}
@@ -411,7 +538,7 @@ func TestRunnerCaseOverrides(t *testing.T) {
 // Recover：服务重启把中断任务标记 aborted。
 func TestRunnerRecover(t *testing.T) {
 	r, st := setupRunner(t)
-	run := Run{ID: "x1", CreatedBy: "t", Suite: "k3-v1", BaseURL: "http://x", Model: "kimi-k3", Tier: "F", Status: runRunning, CreatedAt: time.Now()}
+	run := Run{ID: "x1", CreatedBy: "t", Suite: "k3-v1", BaseURL: "http://x", Model: "kimi-k3", Preset: "format", Status: runRunning, CreatedAt: time.Now()}
 	if err := st.DB.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}

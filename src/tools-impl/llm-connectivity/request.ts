@@ -1,4 +1,6 @@
 // OpenAI / Claude 两种接口格式的连通性测试：请求构造、curl 生成、SSE 解析。
+import { toolFetch } from "../../api/client";
+
 export type ApiFormat = "openai" | "anthropic";
 
 export interface TargetConfig {
@@ -346,6 +348,23 @@ function consumeStreamChunk(
   return rest;
 }
 
+/** 浏览器直连第三方接口常被 CORS 拦截；统一走后端同源代理。 */
+async function proxyFetch(
+  url: string,
+  method: "GET" | "POST",
+  headers: Record<string, string>,
+  body: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return toolFetch("llm-connectivity", "/proxy", {
+    method: "POST",
+    redirect: "manual",
+    signal,
+    body: JSON.stringify({ url, method, headers, body, timeout_ms: timeoutMs }),
+  });
+}
+
 /** 执行一次连通性测试；取消或超时通过 AbortController 传递。 */
 export async function runConnectivityTest(
   config: TargetConfig,
@@ -386,12 +405,14 @@ export async function runConnectivityTest(
   try {
     let response: Response;
     try {
-      response = await fetch(built.url, {
-        method: "POST",
-        headers: built.headers,
-        body: built.body,
-        signal: controller.signal,
-      });
+      response = await proxyFetch(
+        built.url,
+        "POST",
+        built.headers,
+        built.body,
+        config.timeoutMs,
+        controller.signal,
+      );
     } catch {
       result.latencyMs = Math.round(performance.now() - startedAt);
       result.networkError = true;
@@ -399,7 +420,7 @@ export async function runConnectivityTest(
         ? "测试已取消"
         : timedOut
           ? `请求超时（${config.timeoutMs}ms）`
-          : "请求未送达服务端：可能是 CORS 限制、Base URL 不可达，或 https 页面请求了 http 接口。请用下方 curl 在终端复测。";
+          : "请求未送达服务端：工具代理或上游接口不可达。请用下方 curl 在终端复测。";
       return result;
     }
 
@@ -531,7 +552,7 @@ export async function fetchModelList(config: TargetConfig): Promise<ModelListRes
 
     return { models, error: models.length ? null : "模型列表为空" };
   } catch {
-    return { models: [], error: "拉取模型列表失败（网络或 CORS）" };
+    return { models: [], error: "拉取模型列表失败（代理或上游网络）" };
   } finally {
     window.clearTimeout(timer);
   }

@@ -35,3 +35,12 @@ export function toolApi<T>(id:string, path:string, init:RequestInit={}):Promise<
  if(!toolSlug.test(id)||!path.startsWith('/')) throw new Error('工具接口路径无效');
  return api<T>(`/tools/${id}${path}`,init);
 }
+
+/** 工具后端的原始 Response 通道：用于代理转发/流式读取，不解析 JSON。 */
+export async function toolFetch(id:string, path:string, init:RequestInit={}):Promise<Response> {
+ if(!toolSlug.test(id)||!path.startsWith('/')) throw new Error('工具接口路径无效');
+ const headers=new Headers(init.headers);
+ if(init.body!==undefined) headers.set('Content-Type','application/json');
+ if(!['GET','HEAD'].includes((init.method||'GET').toUpperCase()) && csrf) headers.set('X-CSRF-Token',csrf);
+ return fetch(`/api/tools/${id}${path}`,{...init,headers,credentials:'same-origin'});
+}

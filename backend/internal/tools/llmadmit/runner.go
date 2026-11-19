@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -19,6 +20,7 @@ import (
 
 // 运行状态机：running → pausing → paused → running → succeeded/failed/aborted。
 const (
+	runQueued    = "queued"
 	runRunning   = "running"
 	runPausing   = "pausing"
 	runPaused    = "paused"
@@ -36,9 +38,12 @@ type Runner struct {
 	suites map[string]suite.Suite
 	origin string // 公网地址（媒体托管 URL 用），空则降级
 
-	// active 受通道容量 1 保护：占用即单飞。
-	slot   chan struct{}
-	cancel context.CancelFunc
+	// slot 容量 1：同一时间只执行一个任务；其余任务在 queued 状态排队。
+	slot     chan struct{}
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
+	activeID string
 }
 
 func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOrigin string) *Runner {
@@ -52,19 +57,33 @@ func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOr
 // Recover 在服务重启后把中断的任务标记为 aborted（已完成用例留档不丢）。
 func (r *Runner) Recover() error {
 	now := time.Now()
-	return r.db.Model(&Run{}).
+	if err := r.db.Model(&Run{}).
 		Where("status IN ?", []string{runRunning, runPausing}).
-		Updates(map[string]any{"status": runAborted, "stop_reason": "服务重启，任务中断", "finished_at": &now}).Error
+		Updates(map[string]any{"status": runAborted, "stop_reason": "服务重启，任务中断", "finished_at": &now}).Error; err != nil {
+		return err
+	}
+	// 重启后继续消费持久化的排队任务。
+	r.dispatch()
+	return nil
 }
 
-// Busy 返回当前是否有活跃任务（含暂停中）；查询异常时不误判，让后续写库暴露真实错误。
-func (r *Runner) Busy() (bool, *Run) {
-	var run Run
-	err := r.db.Where("status IN ?", []string{runRunning, runPausing, runPaused}).Order("created_at DESC").First(&run).Error
-	if err != nil {
-		return false, nil
+func selectedIDs(cases []suite.Case) []string {
+	ids := make([]string, 0, len(cases))
+	for _, c := range cases {
+		ids = append(ids, c.ID)
 	}
-	return true, &run
+	return ids
+}
+
+// customCaseIDs 只保存用户显式选的用例（闸门由 SelectIDs 自动补，不写进展示范围）。
+func customCaseIDs(cases []suite.Case) []string {
+	ids := make([]string, 0, len(cases))
+	for _, c := range cases {
+		if c.Group != suite.GroupGate {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
 }
 
 func newRunID() string {
@@ -73,26 +92,28 @@ func newRunID() string {
 	return hex.EncodeToString(b)
 }
 
-// Start 创建任务并异步执行；已有活跃任务时返回 409。
-// overrides：用例级自定义（skip=不测试 / exempt=手动豁免），键不存在的用例或非法取值直接报错。
-func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tier, channel string, declarations map[string]bool, overrides map[string]string) (Run, error) {
-	if busy, _ := r.Busy(); busy {
-		return Run{}, service.Problem(409, "已有进行中的测试任务，请先完成或终止")
-	}
-	tierIDs := map[string]bool{}
-	var cases []suite.Case
-	for _, t := range s.Tiers {
-		tierIDs[t.ID] = true
-		cases = append(cases, tierCases(t)...)
-		if t.ID == tier {
-			break
+// Start 保留旧调用：不指定自定义用例集，按 preset 选择。
+func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, preset suite.Group, channel string, declarations map[string]bool, overrides map[string]string) (Run, error) {
+	return r.StartWithCases(createdBy, s, target, preset, channel, declarations, overrides, nil)
+}
+
+// StartWithCases 创建任务并加入队列；并发任务固定为 1，后续任务显示 queued。
+// preset 决定默认跑哪一组用例（空 = 全测）；caseIDs 非空时只跑显式用例并自动带上闸门；
+// overrides 为用例级自定义（skip=不测试 / exempt=手动豁免），键不存在的用例或非法取值直接报错。
+func (r *Runner) StartWithCases(createdBy string, s suite.Suite, target suite.Target, preset suite.Group, channel string, declarations map[string]bool, overrides map[string]string, caseIDs []string) (Run, error) {
+	selected := s.Select(preset)
+	if len(caseIDs) > 0 {
+		var ok bool
+		selected, ok = s.SelectIDs(caseIDs)
+		if !ok {
+			return Run{}, service.Problem(400, "用例不存在")
 		}
 	}
-	if !tierIDs[tier] {
-		return Run{}, service.Problem(400, "档位无效")
+	if len(selected) == 0 {
+		return Run{}, service.Problem(400, "该预设下没有可执行用例")
 	}
-	validIDs := map[string]bool{}
-	for _, c := range cases {
+	validIDs := make(map[string]bool, len(selected))
+	for _, c := range selected {
 		validIDs[c.ID] = true
 	}
 	for id, mode := range overrides {
@@ -121,59 +142,106 @@ func (r *Runner) Start(createdBy string, s suite.Suite, target suite.Target, tie
 	for id, mode := range overrides {
 		merged[id] = mode
 	}
+	// 未显式指定 case_ids 的常规整组测试默认跳过可选/昂贵用例；
+	// 显式选择时不受影响，管理员已配置的 skip/exempt 也优先保留。
+	if len(caseIDs) == 0 {
+		for _, c := range selected {
+			if c.DefaultSkip {
+				if _, exists := merged[c.ID]; !exists {
+					merged[c.ID] = "skip"
+				}
+			}
+		}
+	}
+	// 显式勾选用例时，勾选即视为要求验证该能力，自动声明对应能力。
+	if len(caseIDs) > 0 {
+		for _, c := range selected {
+			if c.Capability != "" {
+				declarations[c.Capability] = true
+			}
+		}
+	}
 	declJSON, _ := json.Marshal(declarations)
 	ovrJSON, _ := json.Marshal(merged)
+	customIDs := ""
+	if len(caseIDs) > 0 {
+		customIDs = strings.Join(customCaseIDs(selected), ",")
+		if customIDs == "" {
+			customIDs = strings.Join(selectedIDs(selected), ",")
+		}
+	}
 	run := Run{
 		ID: newRunID(), CreatedBy: createdBy, Suite: s.ID, SuiteName: s.Name,
-		BaseURL: target.BaseURL, APIKey: target.APIKey, Model: target.Model, Channel: channel,
-		Tier: tier, Declarations: string(declJSON), CaseOverrides: string(ovrJSON), Status: runRunning,
-		MediaToken: newRunID(), TotalCases: len(cases), CreatedAt: time.Now(),
+		BaseURL: target.BaseURL, PrimaryDomain: primaryDomain(target.BaseURL), APIKey: target.APIKey, Model: target.Model, Channel: channel,
+		Preset: string(preset), Declarations: string(declJSON), CaseOverrides: string(ovrJSON), CaseIDs: customIDs, Status: runQueued,
+		MediaToken: newRunID(), TotalCases: len(selected), CreatedAt: time.Now(),
 	}
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&run).Error; err != nil {
 			return err
 		}
-		seq := 0
-		for _, t := range s.Tiers {
-			for _, c := range t.Cases {
-				seq++
-				level := string(c.Level)
-				if override := levelOf[c.ID]; override != "" {
-					level = override
-				}
-				row := CaseResult{RunID: run.ID, Seq: seq, CaseID: c.ID, Tier: t.ID, Name: c.Name, Level: level, Status: suite.StatusPending, Metrics: "{}", Defects: "[]"}
-				if err := tx.Create(&row).Error; err != nil {
-					return err
-				}
+		for seq, c := range selected {
+			level := string(c.Level)
+			if override := levelOf[c.ID]; override != "" {
+				level = override
 			}
-			if t.ID == tier {
-				break
+			row := CaseResult{RunID: run.ID, Seq: seq + 1, CaseID: c.ID, Group: c.Group, Name: c.Name, Level: level, Status: suite.StatusPending, Metrics: "{}", Defects: "[]"}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
 			}
 		}
 		actor := createdBy
 		if actor == "" {
 			actor = "guest"
 		}
-		return service.Audit(tx, actor, "llmadmit.run.create", fmt.Sprintf("%s %s %s", s.ID, target.Model, tier))
+		return service.Audit(tx, actor, "llmadmit.run.create", fmt.Sprintf("%s %s %s", s.ID, target.Model, preset))
 	})
 	if err != nil {
 		return Run{}, service.DBError(err)
 	}
-	r.goRun(run.ID)
+	r.dispatch()
 	return run, nil
 }
 
-func tierCases(t suite.Tier) []suite.Case { return t.Cases }
+func (r *Runner) launch(runID string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	r.mu.Lock()
+	r.cancel, r.done, r.activeID = cancel, done, runID
+	r.mu.Unlock()
+	go func() {
+		defer func() {
+			r.mu.Lock()
+			if r.activeID == runID {
+				r.activeID = ""
+			}
+			r.mu.Unlock()
+			close(done)
+		}()
+		r.loop(ctx, runID)
+	}()
+}
 
-func (r *Runner) goRun(runID string) {
+// dispatch 从 queued 队列取最早任务启动；并发容量固定为 1。
+func (r *Runner) dispatch() {
 	select {
 	case r.slot <- struct{}{}:
 	default:
-		return // 单飞槽被占（理论上 Start 已挡住，兜底）
+		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
-	go r.loop(ctx, runID)
+	// 暂停任务已经释放执行槽，不再阻塞 queued；槽位本身保证同一时间只跑一个任务。
+	var run Run
+	if err := r.db.Where("status = ?", runQueued).Order("created_at ASC, id ASC").First(&run).Error; err != nil {
+		<-r.slot
+		return
+	}
+	now := time.Now()
+	if err := r.db.Model(&Run{}).Where("id = ? AND status = ?", run.ID, runQueued).
+		Updates(map[string]any{"status": runRunning, "started_at": &now}).Error; err != nil {
+		<-r.slot
+		return
+	}
+	r.launch(run.ID)
 }
 
 // Pause 请求暂停：在用例边界生效（长用例内部循环也会检查）。
@@ -182,30 +250,54 @@ func (r *Runner) Pause(id string) error {
 	if res.RowsAffected == 0 {
 		return service.Problem(409, "任务不在运行中")
 	}
+	// 暂停时立即取消当前请求，避免长 HTTP/30 分钟超时让任务长时间停在 pausing。
+	r.mu.Lock()
+	activeID, cancel := r.activeID, r.cancel
+	r.mu.Unlock()
+	if activeID == id && cancel != nil {
+		cancel()
+	}
 	return nil
 }
 
-// Resume 从下一个 pending 用例继续。
+// Resume 从下一个 pending 用例继续；支持暂停和已终止任务。
+// 恢复只入队，不抢占正在执行的任务；dispatch 在槽位空出后按创建顺序启动。
 func (r *Runner) Resume(id string) error {
-	res := r.db.Model(&Run{}).Where("id = ? AND status = ?", id, runPaused).Update("status", runRunning)
+	res := r.db.Model(&Run{}).Where("id = ? AND status IN ?", id, []string{runPaused, runAborted}).
+		Updates(map[string]any{"status": runQueued, "finished_at": nil, "stop_reason": "", "verdict": ""})
 	if res.RowsAffected == 0 {
-		return service.Problem(409, "任务不在暂停中")
+		return service.Problem(409, "任务不在暂停或已终止状态")
 	}
-	r.goRun(id)
+	// 终止时当前用例可能仍处于 running；恢复前回到 pending 重跑。
+	r.db.Model(&CaseResult{}).Where("run_id = ? AND status = ?", id, suite.StatusRunning).
+		Updates(map[string]any{"status": suite.StatusPending, "started_at": nil})
+	r.dispatch()
 	return nil
 }
 
 // Abort 终止任务：立即取消 HTTP，状态落 aborted。
 func (r *Runner) Abort(id string, actor string) error {
-	res := r.db.Model(&Run{}).Where("id = ? AND status IN ?", id, []string{runRunning, runPausing, runPaused}).
+	res := r.db.Model(&Run{}).Where("id = ? AND status IN ?", id, []string{runQueued, runRunning, runPausing, runPaused}).
 		Updates(map[string]any{"status": runAborted, "stop_reason": "手动终止", "finished_at": time.Now()})
 	if res.RowsAffected == 0 {
 		return service.Problem(409, "任务已结束")
 	}
-	if r.cancel != nil {
-		r.cancel()
+	r.mu.Lock()
+	cancel, done := r.cancel, r.done
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	return service.Audit(r.db, actor, "llmadmit.run.abort", id)
+	// 等旧循环释放单飞槽，避免用户很快点“继续”时启动两个循环。
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+		}
+	}
+	_ = service.Audit(r.db, actor, "llmadmit.run.abort", id)
+	r.dispatch()
+	return nil
 }
 
 func (r *Runner) loadRun(id string) (Run, error) {
@@ -243,124 +335,101 @@ func (r *Runner) control(ctx context.Context, runID string) func() error {
 }
 
 func (r *Runner) loop(ctx context.Context, runID string) {
-	defer func() { <-r.slot }()
+	defer func() {
+		<-r.slot
+		r.dispatch()
+	}()
 	run, err := r.loadRun(runID)
 	if err != nil {
 		return
 	}
 	s, ok := r.suites[run.Suite]
 	if !ok {
-		r.finish(runID, runAborted, "", "套件不存在", nil)
+		r.finish(runID, runAborted, "", "套件不存在")
 		return
 	}
 	now := time.Now()
 	r.db.Model(&Run{}).Where("id = ?", runID).Update("started_at", &now)
 	target := suite.Target{BaseURL: run.BaseURL, APIKey: run.APIKey, Model: run.Model}
-	decl := r.declarations(run)
 
-	// 三档顺序执行但不因失败终止：每档产出判定后继续，最终汇总裁决；
-	// 仅前置闸门失败（本次测试无效）才中止。
-	tierResults := map[string]string{}
-	ovr := r.overrides(run)
-	for _, tier := range s.Tiers {
-		verdict := r.runTier(ctx, run, tier, target, decl, ovr)
-		switch verdict {
-		case tierPaused:
-			r.db.Model(&Run{}).Where("id = ? AND status = ?", runID, runPausing).Update("status", runPaused)
-			return
-		case tierAborted:
-			return
-		case tierInvalid:
-			r.finish(runID, runFailed, "无效", tier.ID+" 档前置闸门未通过", tierResults)
-			return
+	selected := s.Select(suite.Group(run.Preset))
+	if run.CaseIDs != "" {
+		if ids, ok := s.SelectIDs(strings.Split(run.CaseIDs, ",")); ok {
+			selected = ids
 		}
-		tierResults[tier.ID] = verdict
-		if tier.ID == run.Tier {
-			break
-		}
+	}
+	switch r.runAll(ctx, run, selected, target, r.declarations(run), r.overrides(run)) {
+	case progressPaused:
+		r.markPaused(runID)
+		return
+	case progressAborted:
+		return
+	case progressInvalid:
+		// 闸门不过 → 本次测试无效，不产出 P0/P1 结论。
+		r.finish(runID, runFailed, "无效", "前置闸门未通过，本次测试不作数")
+		return
 	}
 	// 裁决不写「是否通过」，按级别统计未通过项（P0×n、P1×n …）。
 	var rows []CaseResult
 	r.db.Where("run_id = ?", runID).Find(&rows)
 	total := map[string]int{}
-	perTier := map[string]map[string]int{}
 	for _, row := range rows {
-		if row.Status != suite.StatusFailed {
-			continue
+		if row.Status == suite.StatusFailed {
+			total[normalizeLevel(row.Level)]++
 		}
-		level := normalizeLevel(row.Level)
-		total[level]++
-		if perTier[row.Tier] == nil {
-			perTier[row.Tier] = map[string]int{}
-		}
-		perTier[row.Tier][level]++
 	}
 	verdict := verdictText(total)
-	tierSummary := map[string]string{}
-	for _, tier := range s.Tiers {
-		tierSummary[tier.ID] = verdictText(perTier[tier.ID])
-		if tier.ID == run.Tier {
-			break
-		}
-	}
 	status := runSucceeded
 	if verdict != "0 项未通过" {
 		status = runFailed
 	}
-	r.finish(runID, status, verdict, verdictReason(verdict, tierSummary), tierSummary)
+	// 未通过原因已由 verdict 与缺陷清单表达，不再重复写入说明行。
+	r.finish(runID, status, verdict, "")
 }
 
-func verdictReason(verdict string, perTier map[string]string) string {
-	if verdict == "0 项未通过" {
-		return ""
-	}
-	parts := []string{}
-	for _, tier := range []string{"F", "B", "M", "S"} {
-		if text, ok := perTier[tier]; ok && text != "0 项未通过" {
-			parts = append(parts, tier+" 档 "+text)
+// markPaused 持久化暂停终态；短暂 SQLite 锁冲突时重试，避免任务永远停在 pausing。
+func (r *Runner) markPaused(runID string) {
+	for attempt := 0; attempt < 5; attempt++ {
+		res := r.db.Model(&Run{}).Where("id = ? AND status = ?", runID, runPausing).Update("status", runPaused)
+		if res.Error == nil && res.RowsAffected > 0 {
+			return
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return strings.Join(parts, "；")
 }
 
-func (r *Runner) finish(runID, status, verdict, reason string, tierResults map[string]string) {
-	now := time.Now()
-	results, _ := json.Marshal(tierResults)
-	r.db.Model(&Run{}).Where("id = ?", runID).Updates(map[string]any{
-		"status": status, "verdict": verdict, "stop_reason": reason, "tier_results": string(results), "finished_at": &now,
-	})
-	// 未执行的用例标记跳过，避免界面永远显示「待执行」。
-	r.db.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", runID, []string{suite.StatusPending, suite.StatusRunning}).
-		Updates(map[string]any{"status": suite.StatusSkipped, "summary": "任务已结束，未执行"})
-}
-
+// runAll 的收尾状态：除正常跑完外，暂停/终止/无效都需要中断整个任务。
 const (
-	tierPassed  = "passed"
-	tierFailed  = "failed"
-	tierPaused  = "paused"
-	tierAborted = "aborted"
-	tierInvalid = "invalid"
+	progressDone    = "done"
+	progressPaused  = "paused"
+	progressAborted = "aborted"
+	progressInvalid = "invalid"
 )
 
-func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target suite.Target, decl map[string]bool, ovr map[string]string) string {
+// runAll 顺序执行选中用例；P0 失败不提前退出（保证数据完整），仅闸门失败判定整次无效。
+func (r *Runner) runAll(ctx context.Context, run Run, cases []suite.Case, target suite.Target, decl map[string]bool, ovr map[string]string) string {
 	declared := func(capability string) bool { return decl[capability] }
-	failed := false
-	p1Count := 0
-	for _, c := range tier.Cases {
+	for _, c := range cases {
+		if ctx.Err() != nil {
+			switch r.runState(run.ID) {
+			case runPausing:
+				return progressPaused
+			default:
+				return progressAborted
+			}
+		}
 		switch r.runState(run.ID) {
 		case runAborted:
-			return tierAborted
+			return progressAborted
 		case runPausing:
-			return tierPaused
+			return progressPaused
 		}
 		var row CaseResult
-		if err := r.db.Where("run_id = ? AND case_id = ? AND tier = ?", run.ID, c.ID, tier.ID).First(&row).Error; err != nil {
+		if err := r.db.Where("run_id = ? AND case_id = ?", run.ID, c.ID).First(&row).Error; err != nil {
 			continue
 		}
 		if row.Status != suite.StatusPending {
-			// 恢复时跳过已完成用例；其缺陷仍计入 P1 统计。
-			p1Count += countP1(row.Defects)
-			continue
+			continue // 恢复时跳过已完成用例
 		}
 		// 任务级自定义：skip=不测试，exempt=手动豁免（均不影响裁决）。
 		switch ovr[c.ID] {
@@ -368,31 +437,24 @@ func (r *Runner) runTier(ctx context.Context, run Run, tier suite.Tier, target s
 			r.persist(run.ID, &row, suite.Outcome{Status: suite.StatusSkipped, Summary: "手动选择不测试"})
 			continue
 		case "exempt":
-			r.persist(run.ID, &row, suite.Outcome{Status: suite.StatusExempt, Summary: "手动豁免"})
+			r.persist(run.ID, &row, suite.Outcome{Status: suite.StatusExempt, Summary: "手动跳过"})
 			continue
 		}
-		out := r.execute(ctx, run, c, target, declared, &row)
-		if c.Level == suite.LevelGate && out.Status == suite.StatusFailed {
-			return tierInvalid
+		if out := r.execute(ctx, run, c, target, declared, &row); c.Level == suite.LevelGate && out.Status == suite.StatusFailed {
+			return progressInvalid
 		}
-		if out.Status == suite.StatusFailed && (c.Level == suite.LevelP0 || c.Level == suite.LevelRequired) {
-			failed = true
-		}
-		for _, d := range out.Defects {
-			switch d.Level {
-			case "P0":
-				failed = true
-			case "P1":
-				p1Count++
-			}
-		}
-		// P0 不提前退出：当档剩余用例继续执行，保证数据完整。
 	}
-	// §1.3：同一档 P1 ≥ 3 → 当档不通过。
-	if failed || p1Count >= 3 {
-		return tierFailed
-	}
-	return tierPassed
+	return progressDone
+}
+
+func (r *Runner) finish(runID, status, verdict, reason string) {
+	now := time.Now()
+	r.db.Model(&Run{}).Where("id = ?", runID).Updates(map[string]any{
+		"status": status, "verdict": verdict, "stop_reason": reason, "finished_at": &now,
+	})
+	// 未执行的用例标记跳过，避免界面永远显示「待执行」。
+	r.db.Model(&CaseResult{}).Where("run_id = ? AND status IN ?", runID, []string{suite.StatusPending, suite.StatusRunning}).
+		Updates(map[string]any{"status": suite.StatusSkipped, "summary": "任务已结束，未执行"})
 }
 
 func (r *Runner) runState(runID string) string {
@@ -401,20 +463,6 @@ func (r *Runner) runState(runID string) string {
 		return runAborted
 	}
 	return status
-}
-
-func countP1(defectsJSON string) int {
-	var defects []suite.Defect
-	if json.Unmarshal([]byte(defectsJSON), &defects) != nil {
-		return 0
-	}
-	n := 0
-	for _, d := range defects {
-		if d.Level == "P1" {
-			n++
-		}
-	}
-	return n
 }
 
 // execute 执行单个用例并落库；被暂停/终止打断的用例回到 pending，恢复时重跑。
@@ -444,6 +492,11 @@ func (r *Runner) execute(ctx context.Context, run Run, c suite.Case, target suit
 		}()
 		out = c.Run(caseCtx)
 	}()
+	if ctx.Err() != nil {
+		// 旧循环已取消（暂停/终止/重启）：即使任务随后被“继续”，也不能写终态。
+		r.db.Model(row).Updates(map[string]any{"status": suite.StatusPending, "started_at": nil})
+		return out
+	}
 	if state := r.runState(run.ID); state == runPausing || state == runAborted {
 		// 暂停/终止：用例回到 pending，恢复后重跑；已完成用例进度不回退。
 		r.db.Model(row).Updates(map[string]any{"status": suite.StatusPending, "started_at": nil})

@@ -76,15 +76,15 @@ export interface SavedCard {
 }
 
 export const fieldDefs: { key: FieldKey; label: string; placeholder: string }[] = [
-  { key: "logo", label: "标识文字", placeholder: "MINGSHU" },
-  { key: "company", label: "公司名称", placeholder: "广州明枢科技有限公司" },
-  { key: "companyEn", label: "公司英文", placeholder: "GUANGZHOU MINGSHU TECHNOLOGY CO., LTD." },
+  { key: "logo", label: "标识文字", placeholder: "XXXX" },
+  { key: "company", label: "公司名称", placeholder: "XXXX科技有限公司" },
+  { key: "companyEn", label: "公司英文", placeholder: "XXXX TECHNOLOGY CO., LTD." },
   { key: "name", label: "姓名", placeholder: "姓名占位" },
   { key: "title", label: "职位", placeholder: "职位占位" },
   { key: "phone", label: "电话", placeholder: "138 0000 0000" },
-  { key: "email", label: "邮箱", placeholder: "name@mingshu.tech" },
-  { key: "address", label: "地址", placeholder: "广州市 · 天河区" },
-  { key: "website", label: "网站", placeholder: "www.mingshu.tech" },
+  { key: "email", label: "邮箱", placeholder: "name@example.com" },
+  { key: "address", label: "地址", placeholder: "XX市 · XX区" },
+  { key: "website", label: "网站", placeholder: "www.example.com" },
 ];
 
 export const sizeDefs: { key: SizeKey; label: string; min: number; max: number }[] = [
@@ -121,15 +121,15 @@ export const bgPresets = ["#ffffff", "#faf7f2", "#f1f5f9", "#0f172a", "#111827"]
 export function defaultState(): CardState {
   return {
     fields: {
-      logo: "MINGSHU",
-      company: "广州明枢科技有限公司",
-      companyEn: "GUANGZHOU MINGSHU TECHNOLOGY CO., LTD.",
+      logo: "XXXX",
+      company: "XXXX科技有限公司",
+      companyEn: "XXXX TECHNOLOGY CO., LTD.",
       name: "姓名占位",
       title: "职位占位",
       phone: "138 0000 0000",
-      email: "name@mingshu.tech",
-      address: "广州市 · 天河区",
-      website: "www.mingshu.tech",
+      email: "name@example.com",
+      address: "XX市 · XX区",
+      website: "www.example.com",
     },
     show: {
       logo: true,
@@ -157,7 +157,7 @@ export function defaultState(): CardState {
       titleSize: 20,
       contactSize: 16,
       wmEnabled: true,
-      wmText: "MINGSHU",
+      wmText: "XXXX",
       wmSize: 46,
       wmOpacity: 6,
       wmGap: 110,
