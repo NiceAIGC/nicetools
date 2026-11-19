@@ -2,9 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addToast,
   Button,
-  Card,
-  CardBody,
-  Checkbox,
   Chip,
   Input,
   Progress,
@@ -15,14 +12,10 @@ import {
 
 import {
   abortRun,
-  exportMerged,
   listDomainGroups,
   pauseRun,
   resumeRun,
   type DomainGroup,
-  type ExportDetail,
-  type ExportFormat,
-  type ExportType,
   type Run,
   type SuiteInfo,
 } from "../api";
@@ -38,7 +31,7 @@ import {
 } from "../lib/report";
 import RunDetailDrawer from "./RunDetailDrawer";
 
-type SortKey = "active" | "recent" | "failed";
+type SortKey = "recent" | "active" | "failed";
 type GroupMode = "domain" | "host";
 
 function readParam(key: string, fallback: string): string {
@@ -56,17 +49,7 @@ function regroupByHost(groups: DomainGroup[]): DomainGroup[] {
       const host = hostOf(run.base_url) || group.domain;
       let item = map.get(host);
       if (!item) {
-        item = {
-          domain: host,
-          name: run.channel || host,
-          hosts: [host],
-          models: [],
-          channels: [],
-          run_count: 0,
-          active_count: 0,
-          failed_by_level: {},
-          runs: [],
-        };
+        item = { domain: host, name: run.channel || host, hosts: [host], models: [], channels: [], run_count: 0, active_count: 0, failed_by_level: {}, runs: [] };
         map.set(host, item);
       }
       item.runs.push(run);
@@ -76,9 +59,7 @@ function regroupByHost(groups: DomainGroup[]): DomainGroup[] {
       if (run.channel && !item.channels.includes(run.channel)) item.channels.push(run.channel);
       if (!item.latest || run.created_at > item.latest.created_at) item.latest = run;
       const terminal = ["succeeded", "failed", "aborted"].includes(run.status);
-      if (terminal && (!item.last_completed || (run.finished_at || run.created_at) > (item.last_completed.finished_at || item.last_completed.created_at))) {
-        item.last_completed = run;
-      }
+      if (terminal && (!item.last_completed || (run.finished_at || run.created_at) > (item.last_completed.finished_at || item.last_completed.created_at))) item.last_completed = run;
     }
   }
   return [...map.values()].map((item) => ({
@@ -99,29 +80,30 @@ function groupMatches(group: DomainGroup, query: string, status: string, model: 
   if (status === "paused" && gs !== "paused") return false;
   if (!query) return true;
   const q = query.toLowerCase();
-  return [group.domain, group.name, ...group.hosts, ...group.models, ...group.channels, ...group.runs.map((r) => r.id)]
-    .join(" ")
-    .toLowerCase()
-    .includes(q);
+  return [group.domain, group.name, ...group.hosts, ...group.models, ...group.channels, ...group.runs.map((r) => r.id)].join(" ").toLowerCase().includes(q);
 }
 
-function activeProgress(group: DomainGroup) {
-  return group.runs.find((r) => ["running", "pausing", "paused"].includes(r.status) && r.progress)?.progress;
+function currentProgress(group: DomainGroup) {
+  const run = group.runs.find((r) => ["running", "pausing", "paused"].includes(r.status) && r.progress);
+  return run ? { run, progress: run.progress! } : null;
 }
 
-function progressText(run: Run): string {
+function progressLabel(run: Run): string {
   const p = run.progress;
   if (!p) return "";
-  const step = p.step || p.case_name || p.case_id;
-  return `${step}${p.total > 0 ? ` · ${p.done}/${p.total}` : ""} · 请求 ${p.requests}`;
+  return `${p.step || p.case_name || p.case_id}${p.total > 0 ? ` · ${p.done}/${p.total}` : ""} · 请求 ${p.requests}`;
 }
 
-function domainCardSummary(group: DomainGroup): string {
-  const gs = groupStatus(group);
-  if (gs === "running" || gs === "pausing") return "运行中";
-  if (gs === "queued") return "排队中";
-  if (gs === "paused") return "已暂停";
-  return group.last_completed?.verdict || "暂无结论";
+function statusDotClass(status: string): string {
+  switch (status) {
+    case "running":
+    case "pausing": return "bg-primary";
+    case "queued": return "bg-warning";
+    case "paused": return "bg-warning";
+    case "failed": return "bg-danger";
+    case "succeeded": return "bg-success";
+    default: return "bg-default-300";
+  }
 }
 
 export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; onStats?: (stats: { runs: number; active: number }) => void }) {
@@ -131,15 +113,14 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
   const [query, setQuery] = useState(() => readParam("q", ""));
   const [status, setStatus] = useState(() => readParam("status", "all"));
   const [model, setModel] = useState(() => readParam("model", ""));
-  const [sort, setSort] = useState<SortKey>(() => readParam("sort", "active") as SortKey);
+  const [sort, setSort] = useState<SortKey>(() => {
+    const value = readParam("sort", "recent");
+    return value === "active" || value === "failed" ? value : "recent";
+  });
   const [groupMode, setGroupMode] = useState<GroupMode>(() => readParam("group", "domain") === "host" ? "host" : "domain");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedDomain, setSelectedDomain] = useState(() => readParam("domain", ""));
+  const [tab, setTab] = useState<"overview" | "history">(() => readParam("tab", "overview") === "history" ? "history" : "overview");
   const [detail, setDetail] = useState<Run | null>(null);
-  const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
-  const [exportDetail, setExportDetail] = useState<ExportDetail>("brief");
-  const [exportType, setExportType] = useState<ExportType>("masked");
-  const [watermark, setWatermark] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -186,16 +167,11 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     });
   }, [sourceGroups, query, status, model, sort]);
 
-  const totalRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.run_count, 0), [sourceGroups]);
-  const activeRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.active_count, 0), [sourceGroups]);
-  const failedDomains = useMemo(() => sourceGroups.filter((g) => g.last_completed?.status === "failed").length, [sourceGroups]);
-  const selectedRuns = useMemo(() => sourceGroups.flatMap((g) => g.runs).filter((r) => selected.has(r.id)), [sourceGroups, selected]);
-  const mergeable = selectedRuns.length >= 2 && selectedRuns.every((r) =>
-    r.suite === selectedRuns[0].suite &&
-    r.base_url === selectedRuns[0].base_url &&
-    r.model === selectedRuns[0].model &&
-    r.channel === selectedRuns[0].channel,
-  );
+  useEffect(() => {
+    if (!selectedDomain && window.matchMedia?.("(min-width: 1024px)").matches && visibleGroups[0]) {
+      setSelectedDomain(visibleGroups[0].domain);
+    }
+  }, [selectedDomain, visibleGroups]);
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -206,25 +182,18 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     set("q", query, "");
     set("status", status, "all");
     set("model", model, "");
-    set("sort", sort, "active");
+    set("sort", sort, "recent");
     set("group", groupMode, "domain");
-    const next = `${window.location.pathname}${p.toString() ? `?${p}` : ""}`;
-    window.history.replaceState(null, "", next);
-  }, [query, status, model, sort, groupMode]);
+    set("domain", selectedDomain, "");
+    set("tab", tab, "overview");
+    window.history.replaceState(null, "", `${window.location.pathname}${p.toString() ? `?${p}` : ""}`);
+  }, [query, status, model, sort, groupMode, selectedDomain, tab]);
 
-  const toggle = (domain: string) => setExpanded((prev) => {
-    const next = new Set(prev);
-    if (next.has(domain)) next.delete(domain);
-    else next.add(domain);
-    return next;
-  });
-
-  const toggleSelected = (id: string, on: boolean) => setSelected((prev) => {
-    const next = new Set(prev);
-    if (on) next.add(id);
-    else next.delete(id);
-    return next;
-  });
+  const totalRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.run_count, 0), [sourceGroups]);
+  const activeRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.active_count, 0), [sourceGroups]);
+  const failedDomains = useMemo(() => sourceGroups.filter((g) => g.last_completed?.status === "failed").length, [sourceGroups]);
+  const selectedGroup = sourceGroups.find((g) => g.domain === selectedDomain) || null;
+  const selectedLatest = selectedGroup ? (selectedGroup.last_completed || selectedGroup.latest) : null;
 
   const act = async (fn: (id: string) => Promise<unknown>, id: string, message: string) => {
     try {
@@ -237,15 +206,20 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     }
   };
 
+  const pickDomain = (domain: string) => {
+    setSelectedDomain(domain);
+    setTab("overview");
+  };
+
   if (loading) return <div className="flex justify-center py-16"><Spinner /></div>;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         {[
-          { label: groupMode === "host" ? "测试 host" : "测试域名", value: sourceGroups.length, note: groupMode === "host" ? "按完整 host 聚合" : "按主域名聚合" },
+          { label: groupMode === "host" ? "测试 host" : "测试域名", value: sourceGroups.length, note: groupMode === "host" ? "按完整 host" : "按主域名" },
           { label: "任务总数", value: totalRuns, note: "全部历史任务" },
-          { label: "活跃/暂停", value: activeRuns, note: "暂停任务不占队列" },
+          { label: "活跃/暂停", value: activeRuns, note: "暂停不占队列" },
           { label: "未通过域名", value: failedDomains, note: "最近完成结论" },
         ].map((item) => (
           <div key={item.label} className="rounded-large border border-default-200 bg-default-50/60 px-4 py-3">
@@ -256,204 +230,197 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
         ))}
       </div>
 
-      <Card shadow="none" className="border border-default-200">
-        <CardBody className="gap-4">
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_120px_140px_140px_130px]">
-              <Input
-                size="sm"
-                className="col-span-2 lg:col-span-1"
-                label="搜索"
-                placeholder="域名 / 名称 / 模型 / 任务 ID"
-                value={query}
-                onValueChange={setQuery}
-                isClearable
-              />
-              <Select aria-label="聚合" size="sm" label="聚合" selectedKeys={[groupMode]} onChange={(e) => setGroupMode(e.target.value === "host" ? "host" : "domain")}>
-                <SelectItem key="domain">主域名</SelectItem>
-                <SelectItem key="host">完整 host</SelectItem>
-              </Select>
-              <Select aria-label="状态" size="sm" label="状态" selectedKeys={[status]} onChange={(e) => setStatus(e.target.value)}>
-                <SelectItem key="all">全部</SelectItem>
-                <SelectItem key="active">活跃/暂停</SelectItem>
-                <SelectItem key="failed">未通过</SelectItem>
-                <SelectItem key="succeeded">已完成</SelectItem>
-                <SelectItem key="paused">已暂停</SelectItem>
-              </Select>
-              <Select
-                aria-label="模型"
-                size="sm"
-                label="模型"
-                selectedKeys={[model || "all"]}
-                onChange={(e) => setModel(e.target.value === "all" ? "" : e.target.value)}
-              >
-                {["all", ...allModels].map((m) => (
-                  <SelectItem key={m} textValue={m === "all" ? "全部模型" : m}>{m === "all" ? "全部模型" : m}</SelectItem>
-                ))}
-              </Select>
-              <Select aria-label="排序" size="sm" label="排序" selectedKeys={[sort]} onChange={(e) => setSort(e.target.value as SortKey)}>
-                <SelectItem key="active">活跃优先</SelectItem>
-                <SelectItem key="recent">最近优先</SelectItem>
-                <SelectItem key="failed">未通过优先</SelectItem>
-              </Select>
-            </div>
-            <div className="flex gap-1">
-              <Button size="sm" variant="flat" onPress={() => setExpanded(new Set(visibleGroups.map((g) => g.domain)))}>展开全部</Button>
-              <Button size="sm" variant="light" onPress={() => setExpanded(new Set())}>收起全部</Button>
-              <Button size="sm" variant="flat" onPress={refresh}>刷新</Button>
-            </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_120px_140px_160px_140px] lg:items-end">
+        <Input className="col-span-2 lg:col-span-1" size="sm" label="搜索" placeholder="域名 / 名称 / 模型 / 任务 ID" value={query} onValueChange={setQuery} isClearable />
+        <Select aria-label="聚合" size="sm" label="聚合" selectedKeys={[groupMode]} onChange={(e) => setGroupMode(e.target.value === "host" ? "host" : "domain")}>
+          <SelectItem key="domain">主域名</SelectItem>
+          <SelectItem key="host">完整 host</SelectItem>
+        </Select>
+        <Select aria-label="状态" size="sm" label="状态" selectedKeys={[status]} onChange={(e) => setStatus(e.target.value)}>
+          <SelectItem key="all">全部</SelectItem>
+          <SelectItem key="active">活跃/暂停</SelectItem>
+          <SelectItem key="failed">未通过</SelectItem>
+          <SelectItem key="succeeded">已完成</SelectItem>
+          <SelectItem key="paused">已暂停</SelectItem>
+        </Select>
+        <Select aria-label="模型" size="sm" label="模型" selectedKeys={[model || "all"]} onChange={(e) => setModel(e.target.value === "all" ? "" : e.target.value)}>
+          {["all", ...allModels].map((m) => <SelectItem key={m} textValue={m === "all" ? "全部模型" : m}>{m === "all" ? "全部模型" : m}</SelectItem>)}
+        </Select>
+        <Select aria-label="排序" size="sm" label="排序" selectedKeys={[sort]} onChange={(e) => setSort(e.target.value as SortKey)}>
+          <SelectItem key="recent">最近测试优先</SelectItem>
+          <SelectItem key="active">活跃优先</SelectItem>
+          <SelectItem key="failed">未通过优先</SelectItem>
+        </Select>
+      </div>
+
+      {error && <p className="rounded-medium bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+
+      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className={`${selectedDomain ? "hidden lg:block" : "block"} min-w-0`}>
+          <div className="flex items-center justify-between px-1 pb-2 text-xs text-default-400">
+            <span>{visibleGroups.length} 个域名</span>
+            <Button size="sm" variant="light" onPress={refresh}>刷新</Button>
           </div>
-
-          {selected.size > 0 && (
-            <div className="flex flex-wrap items-end gap-2 rounded-medium border border-primary/20 bg-primary/5 p-3">
-              <span className="pb-2 text-xs text-default-500">已选 {selected.size} 个任务</span>
-              <Select aria-label="内容" size="sm" className="w-32" selectedKeys={[exportDetail]} onChange={(e) => setExportDetail(e.target.value as ExportDetail)}>
-                <SelectItem key="brief">精简版</SelectItem>
-                <SelectItem key="full">详细版</SelectItem>
-              </Select>
-              <Select aria-label="脱敏" size="sm" className="w-32" selectedKeys={[exportType]} onChange={(e) => setExportType(e.target.value as ExportType)}>
-                <SelectItem key="masked">脱敏</SelectItem>
-                <SelectItem key="full">不脱敏</SelectItem>
-              </Select>
-              <Select aria-label="格式" size="sm" className="w-28" selectedKeys={[exportFormat]} onChange={(e) => setExportFormat(e.target.value as ExportFormat)}>
-                <SelectItem key="pdf">PDF</SelectItem>
-                <SelectItem key="md">MD</SelectItem>
-                <SelectItem key="json">JSON</SelectItem>
-              </Select>
-              <Select aria-label="水印" size="sm" className="w-28" selectedKeys={[watermark ? "on" : "off"]} onChange={(e) => setWatermark(e.target.value === "on")}>
-                <SelectItem key="on">带水印</SelectItem>
-                <SelectItem key="off">无水印</SelectItem>
-              </Select>
-              <Button size="sm" color="primary" variant="flat" isDisabled={!mergeable} onPress={() => exportMerged([...selected], exportType, exportFormat, exportDetail, undefined, undefined, watermark)}>合并导出</Button>
-              <Button size="sm" variant="light" onPress={() => setSelected(new Set())}>清空</Button>
-              <p className={`w-full text-xs ${mergeable ? "text-default-400" : "text-warning"}`}>
-                {mergeable ? "仅允许同标准、同网关、同模型、同渠道的任务合并。" : "已选任务目标不一致或不足 2 个：请逐个任务导出，或只选同一目标的任务合并。"}
-              </p>
-            </div>
-          )}
-
-          {error && <p className="rounded-medium bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
-          {visibleGroups.length === 0 && <p className="py-12 text-center text-sm text-default-400">没有匹配的域名报告</p>}
-
-          <div className="flex flex-col gap-3">
+          <div className="flex max-h-[calc(100vh-18rem)] flex-col gap-1 overflow-y-auto pr-1">
+            {visibleGroups.length === 0 && <p className="py-12 text-center text-sm text-default-400">没有匹配的域名</p>}
             {visibleGroups.map((group) => {
-              const open = expanded.has(group.domain);
               const gs = groupStatus(group);
               const latest = group.latest;
+              const active = currentProgress(group);
               return (
-                <div key={group.domain} className="rounded-large border border-default-200">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 p-4 max-sm:grid-cols-1">
-                    <button type="button" className="min-w-0 text-left" onClick={() => toggle(group.domain)} aria-expanded={open}>
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        <span className="text-xs font-medium text-default-400">{group.name || "未命名任务"}</span>
-                        <span className="break-all font-mono text-lg font-semibold tracking-tight text-foreground sm:text-xl">{group.domain}</span>
-                        <Chip size="sm" variant="flat" color={statusColor[gs]} className="h-5 text-[10px]">{statusLabel[gs] || gs}</Chip>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
-                        {group.models.map((m) => <span key={m} className="text-default-500">{m}</span>)}
-                        <span className="text-default-300">·</span>
-                        <span className={group.last_completed?.status === "failed" ? "font-medium text-danger" : "text-success"}>
-                          {domainCardSummary(group)}
-                        </span>
-                        {group.last_completed?.grade && (
-                          <Chip size="sm" variant="flat" color={gradeColor(group.last_completed.grade)} className="h-5 text-[10px]">
-                            评级 {group.last_completed.grade}
-                            {typeof group.last_completed.pass_rate === "number" ? ` · ${group.last_completed.pass_rate.toFixed(1)}%` : ""}
-                          </Chip>
-                        )}
-                        {failedLevelText(group) && <span className="text-xs text-default-400">{failedLevelText(group)}</span>}
-                      </div>
-                      <p className="mt-1 text-xs text-default-400">
-                        {group.run_count} 个任务 · {group.active_count ? `${group.active_count} 个活跃 · ` : ""}
-                        最近 {displayTime(latest?.created_at || "")}
-                        {latest?.id ? ` · ${latest.id}` : ""}
-                      </p>
-                      {activeProgress(group) && (
-                        <div className="mt-2 max-w-lg">
-                          <Progress
-                            size="sm"
-                            value={activeProgress(group)!.total ? (activeProgress(group)!.done / activeProgress(group)!.total) * 100 : 0}
-                            label={progressText(group.runs.find((r) => ["running", "pausing", "paused"].includes(r.status) && r.progress)!)}
-                          />
-                        </div>
-                      )}
-                    </button>
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-                      {(group.last_completed || latest) && (
-                        <Button size="sm" variant="flat" onPress={() => setDetail(group.last_completed || latest || null)}>最近报告</Button>
-                      )}
-                      <Button size="sm" variant="flat" onPress={() => toggle(group.domain)}>{open ? "收起" : `展开 ${group.run_count}`}</Button>
-                    </div>
+                <button
+                  key={group.domain}
+                  type="button"
+                  onClick={() => pickDomain(group.domain)}
+                  className={`w-full rounded-medium border px-3 py-3 text-left transition-colors ${selectedDomain === group.domain ? "border-primary bg-primary/5" : "border-default-200 hover:bg-default-50"}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(gs)}`} />
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold">{group.domain}</span>
+                    {latest?.grade && <Chip size="sm" variant="flat" color={gradeColor(latest.grade)} className="h-5 text-[10px]">{latest.grade}</Chip>}
                   </div>
-
-                  {open && (
-                    <div className="border-t border-default-200 bg-default-50/40 p-3 sm:p-4">
-                      <div className="hidden grid-cols-[28px_72px_minmax(120px,1.3fr)_minmax(90px,.8fr)_minmax(90px,.8fr)_minmax(130px,1fr)_130px_170px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400 lg:grid">
-                        <span />
-                        <span>状态</span>
-                        <span>任务 ID / 结论</span>
-                        <span>模型</span>
-                        <span>渠道</span>
-                        <span>时间</span>
-                        <span>范围</span>
-                        <span className="text-right">操作</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        {group.runs.map((run) => {
-                          const ranges = suite ? rangeSummary(run, suite) : [];
-                          const isActive = runActive(run);
-                          return (
-                            <div key={run.id} className="grid gap-2 rounded-medium px-2 py-2 hover:bg-default-100/70 lg:grid-cols-[28px_72px_minmax(120px,1.3fr)_minmax(90px,.8fr)_minmax(90px,.8fr)_minmax(130px,1fr)_130px_170px] lg:items-center">
-                              <Checkbox aria-label={`选择任务 ${run.id}`} size="sm" isSelected={selected.has(run.id)} onValueChange={(on) => toggleSelected(run.id, on)} />
-                              <div className="flex items-center gap-1">
-                                <Chip size="sm" variant="flat" color={statusColor[run.status]} className="h-5 text-[10px]">{statusLabel[run.status]}</Chip>
-                              </div>
-                              <div className="min-w-0">
-                                <p className="select-all truncate font-mono text-xs text-default-600">{run.id}</p>
-                                <div className="flex flex-wrap items-center gap-1">
-                                  <p className={`truncate text-xs ${run.verdict.startsWith("0 项") ? "text-success" : "text-danger"}`}>{run.verdict || "—"}</p>
-                                  {run.grade && <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="h-5 text-[10px]">{run.grade}{typeof run.pass_rate === "number" ? ` ${run.pass_rate.toFixed(1)}%` : ""}</Chip>}
-                                </div>
-                              </div>
-                              <span className="truncate text-sm">{run.model}</span>
-                              <span className="truncate text-sm text-default-500">{run.channel || "—"}</span>
-                              <div className="text-xs text-default-400">
-                                <p>{displayTime(run.created_at)}</p>
-                                <p>{run.done_cases}/{run.total_cases} 项</p>
-                              </div>
-                              <div className="flex flex-wrap gap-1">
-                                {ranges.slice(0, 4).map((item) => <Chip key={item.key} size="sm" variant="flat" className="h-5 text-[10px]">{item.label} {item.count}</Chip>)}
-                              </div>
-                              <div className="flex flex-nowrap justify-end gap-1">
-                                <Button size="sm" variant="flat" onPress={() => setDetail(run)}>详情</Button>
-                                {run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, run.id, "已请求暂停")}>暂停</Button>}
-                                {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
-                                {isActive && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
-                              </div>
-                              {run.progress && isActive && (
-                                <div className="col-span-full mt-1 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-                                  <Progress size="sm" className="min-w-0 flex-1" value={run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0} />
-                                  <span className="text-xs text-default-400">{progressText(run)}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                  <p className="mt-1 truncate text-xs text-default-500">{group.name || "未命名"} · {group.models.join(" / ")}</p>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-default-400">
+                    <span>{group.run_count} 个任务</span>
+                    <span>{displayTime(latest?.created_at || "")}</span>
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-[11px]">
+                    <span className="text-default-400">{statusLabel[gs] || gs}</span>
+                    {latest?.verdict && <span className={latest.verdict.startsWith("0 项") ? "truncate text-success" : "truncate text-danger"}>{latest.verdict}</span>}
+                  </div>
+                  {active && (
+                    <div className="mt-2">
+                      <Progress size="sm" value={active.progress.total ? (active.progress.done / active.progress.total) * 100 : 0} />
+                      <p className="mt-1 truncate text-[11px] text-default-400">{progressLabel(active.run)}</p>
                     </div>
                   )}
-                </div>
+                </button>
               );
             })}
           </div>
-        </CardBody>
-      </Card>
+        </aside>
 
-      <RunDetailDrawer
-        run={detail}
-        onClose={() => setDetail(null)}
-        onChanged={refresh}
-      />
+        <section className={`${selectedDomain ? "block" : "hidden lg:block"} min-w-0`}>
+          {!selectedGroup ? (
+            <div className="flex min-h-[320px] items-center justify-center rounded-large border border-dashed border-default-200 text-sm text-default-400">
+              选择左侧域名查看报告
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4 rounded-large border border-default-200 p-4 sm:p-5">
+              <div className="flex flex-wrap items-start gap-2">
+                <Button className="lg:hidden" size="sm" variant="light" onPress={() => setSelectedDomain("")}>返回</Button>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-default-400">{selectedGroup.name || "未命名"}</p>
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <h2 className="break-all font-mono text-xl font-semibold sm:text-2xl">{selectedGroup.domain}</h2>
+                    <Chip size="sm" variant="flat" color={statusColor[groupStatus(selectedGroup)]} className="h-5 text-[10px]">{statusLabel[groupStatus(selectedGroup)]}</Chip>
+                    {selectedGroup.last_completed?.grade && (
+                      <Chip size="sm" variant="flat" color={gradeColor(selectedGroup.last_completed.grade)} className="h-5 text-[10px]">
+                        评级 {selectedGroup.last_completed.grade} · {selectedGroup.last_completed.pass_rate?.toFixed(1)}%
+                      </Chip>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-default-400">
+                    {selectedGroup.models.join(" / ")} · {selectedGroup.run_count} 个任务 · 最近 {displayTime(selectedGroup.latest?.created_at || "")}
+                    {selectedGroup.latest?.id ? ` · ${selectedGroup.latest.id}` : ""}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {selectedLatest && <Button size="sm" variant="flat" onPress={() => setDetail(selectedLatest)}>打开最近报告</Button>}
+                </div>
+              </div>
+
+              {currentProgress(selectedGroup) && (
+                <div className="rounded-medium border border-primary/20 bg-primary/5 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-medium">当前：{currentProgress(selectedGroup)!.progress.case_id} {currentProgress(selectedGroup)!.progress.case_name}</span>
+                    <span className="text-default-500">{progressLabel(currentProgress(selectedGroup)!.run)}</span>
+                  </div>
+                  <Progress className="mt-2" size="sm" value={currentProgress(selectedGroup)!.progress.total ? (currentProgress(selectedGroup)!.progress.done / currentProgress(selectedGroup)!.progress.total) * 100 : 0} />
+                </div>
+              )}
+
+              <div className="flex gap-1 border-b border-default-200 pb-2">
+                <Button size="sm" radius="full" variant={tab === "overview" ? "solid" : "light"} color={tab === "overview" ? "primary" : "default"} onPress={() => setTab("overview")}>概览</Button>
+                <Button size="sm" radius="full" variant={tab === "history" ? "solid" : "light"} color={tab === "history" ? "primary" : "default"} onPress={() => setTab("history")}>历史任务</Button>
+              </div>
+
+              {tab === "overview" && selectedLatest && (
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="rounded-medium border border-default-200 px-3 py-2">
+                      <p className="text-xs text-default-400">通过率</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums">{typeof selectedLatest.pass_rate === "number" ? `${selectedLatest.pass_rate.toFixed(1)}%` : "—"}</p>
+                      <p className="text-[11px] text-default-400">评级 {selectedLatest.grade || "—"}</p>
+                    </div>
+                    <div className="rounded-medium border border-default-200 px-3 py-2">
+                      <p className="text-xs text-default-400">通过</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums">{selectedLatest.passed ?? "—"}</p>
+                      <p className="text-[11px] text-default-400">考核 {selectedLatest.assessed ?? "—"} 项</p>
+                    </div>
+                    <div className="rounded-medium border border-default-200 px-3 py-2">
+                      <p className="text-xs text-default-400">失败</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums text-danger">{selectedLatest.failed ?? "—"}</p>
+                      <p className="text-[11px] text-default-400">需处理项</p>
+                    </div>
+                    <div className="rounded-medium border border-default-200 px-3 py-2">
+                      <p className="text-xs text-default-400">最近结论</p>
+                      <p className={`mt-1 truncate text-sm font-medium ${selectedLatest.verdict?.startsWith("0 项") ? "text-success" : "text-danger"}`}>{selectedLatest.verdict || "暂无结论"}</p>
+                      <p className="text-[11px] text-default-400">{displayTime(selectedLatest.created_at)}</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 rounded-medium border border-default-200 px-3 py-3">
+                    <Chip size="sm" variant="flat" color={statusColor[selectedLatest.status]}>{statusLabel[selectedLatest.status]}</Chip>
+                    <span className="text-sm">{selectedLatest.model}</span>
+                    <span className="text-xs text-default-400">{selectedLatest.channel || "未命名"}</span>
+                    {failedLevelText(selectedGroup) && <span className="text-xs text-danger">{failedLevelText(selectedGroup)}</span>}
+                    <Button className="ml-auto" size="sm" variant="flat" onPress={() => setDetail(selectedLatest)}>完整详情</Button>
+                  </div>
+                </div>
+              )}
+
+              {tab === "overview" && !selectedLatest && <p className="py-8 text-center text-sm text-default-400">暂无已完成任务</p>}
+
+              {tab === "history" && (
+                <div className="flex flex-col gap-2">
+                  <div className="hidden grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_80px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400 lg:grid">
+                    <span>状态</span><span>任务 ID</span><span>结论</span><span>模型</span><span>范围</span><span>时间</span><span className="text-right">操作</span>
+                  </div>
+                  {selectedGroup.runs.map((run) => (
+                    <div key={run.id} className="grid gap-2 rounded-medium border border-default-100 px-2 py-2 hover:bg-default-50 lg:grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_80px] lg:items-center">
+                      <Chip size="sm" variant="flat" color={statusColor[run.status]} className="h-5 w-fit text-[10px]">{statusLabel[run.status]}</Chip>
+                      <span className="select-all truncate font-mono text-xs text-default-500">{run.id}</span>
+                      <div className="min-w-0">
+                        <p className={`truncate text-xs ${run.verdict?.startsWith("0 项") ? "text-success" : "text-danger"}`}>{run.verdict || "—"}</p>
+                        {run.grade && <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="mt-0.5 h-5 text-[10px]">{run.grade} {typeof run.pass_rate === "number" ? `${run.pass_rate.toFixed(1)}%` : ""}</Chip>}
+                      </div>
+                      <span className="truncate text-sm">{run.model}</span>
+                      <div className="flex flex-wrap gap-1">
+                        {(suite ? rangeSummary(run, suite) : []).slice(0, 3).map((item) => <Chip key={item.key} size="sm" variant="flat" className="h-5 text-[10px]">{item.label} {item.count}</Chip>)}
+                      </div>
+                      <span className="text-xs text-default-400">{displayTime(run.created_at)}</span>
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="flat" onPress={() => setDetail(run)}>详情</Button>
+                        {run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, run.id, "已请求暂停")}>暂停</Button>}
+                        {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
+                        {["queued", "running", "pausing", "paused"].includes(run.status) && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
+                      </div>
+                      {run.progress && runActive(run) && (
+                        <div className="col-span-full flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                          <Progress size="sm" className="min-w-0 flex-1" value={run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0} />
+                          <span className="text-xs text-default-400">{progressLabel(run)}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <RunDetailDrawer run={detail} onClose={() => setDetail(null)} onChanged={refresh} />
     </div>
   );
 }
