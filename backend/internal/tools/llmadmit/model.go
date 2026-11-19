@@ -86,6 +86,31 @@ type CaseResult struct {
 
 func (CaseResult) TableName() string { return "tool_llmadmit_cases" }
 
+// CaseAttempt 是单个细则的历史执行记录：原始结果 + 每次单项复测。
+// CaseResult 始终保存当前最新结果；历史选择用于导出。
+type CaseAttempt struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	RunID       string     `gorm:"index:idx_llmadmit_attempt,priority:1" json:"run_id"`
+	CaseID      string     `gorm:"index:idx_llmadmit_attempt,priority:2" json:"case_id"`
+	AttemptNo   int        `json:"attempt_no"` // 0=原始结果，1..=复测
+	Source      string     `json:"source"`     // original / recheck
+	Status      string     `json:"status"`
+	HTTPStatus  int        `json:"http_status"`
+	DurationMs  int64      `json:"duration_ms"`
+	Retries     int        `json:"retries"`
+	RequestID   string     `json:"request_id,omitempty"`
+	Summary     string     `json:"summary"`
+	Metrics     string     `json:"metrics"`
+	Defects     string     `json:"defects"`
+	Evidence    string     `json:"evidence"`
+	EvidenceSHA string     `json:"evidence_sha"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+}
+
+func (CaseAttempt) TableName() string { return "tool_llmadmit_attempts" }
+
 // CaseCfg 是管理员级用例永久配置（规范 §6 第三层）：
 // mode=skip/exempt 给所有新任务的默认值；level 非空时覆盖用例级别（P0/P1/P2/P3）。
 type CaseCfg struct {

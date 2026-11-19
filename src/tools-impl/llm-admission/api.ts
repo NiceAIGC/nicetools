@@ -88,6 +88,32 @@ export interface CaseRow {
   defects: string;
 }
 
+export interface CaseAttempt {
+  id: number;
+  run_id: string;
+  case_id: string;
+  attempt_no: number;
+  source: "original" | "recheck" | string;
+  status: string;
+  http_status: number;
+  duration_ms: number;
+  retries: number;
+  request_id?: string;
+  summary: string;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface CaseAttemptBundle {
+  case_id: string;
+  name: string;
+  level: string;
+  group: string;
+  current: CaseRow;
+  attempts: CaseAttempt[];
+}
+
 export interface CaseEvidenceItem {
   label: string;
   request: string;
@@ -151,6 +177,16 @@ export const listDomainGroups = () => toolApi<{ groups: DomainGroup[] }>(ID, "/r
 export const runDetail = (id: string) => toolApi<{ run: Run; cases: CaseRow[] }>(ID, `/runs/${id}`);
 export const caseEvidence = (runId: string, caseId: string) => toolApi<CaseEvidence>(ID, `/runs/${runId}/cases/${encodeURIComponent(caseId)}/evidence`);
 export const createRun = (input: CreateInput) => toolApi<Run>(ID, "/runs", json("POST", input));
+export const recheckCase = (runId: string, caseId: string, includeGates: boolean) =>
+  toolApi<CaseAttempt>(ID, `/runs/${runId}/cases/${encodeURIComponent(caseId)}/recheck`, json("POST", { include_gates: includeGates }));
+export const listCaseAttempts = (runId: string) => toolApi<{ cases: CaseAttemptBundle[] }>(ID, `/runs/${runId}/attempts`);
+export function exportCustomUrl(runId: string, sources: Record<string, string>, type: ExportType, format: ExportFormat, detail: ExportDetail, watermark = true) {
+  const params = new URLSearchParams({ type, format });
+  if (detail === "brief") params.set("detail", "brief");
+  if (!watermark) params.set("watermark", "0");
+  params.set("sources", JSON.stringify(sources));
+  return `/api/tools/${ID}/runs/${runId}/export/custom?${params.toString()}`;
+}
 export const pauseRun = (id: string) => toolApi(ID, `/runs/${id}/pause`, json("POST", {}));
 export const resumeRun = (id: string) => toolApi(ID, `/runs/${id}/resume`, json("POST", {}));
 export const abortRun = (id: string) => toolApi(ID, `/runs/${id}/abort`, json("POST", {}));

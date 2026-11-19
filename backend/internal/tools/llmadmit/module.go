@@ -34,7 +34,7 @@ func New() *Module { return &Module{} }
 func (m *Module) ID() string { return "llm-admission" }
 
 func (m *Module) Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}); err != nil {
+	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}, &CaseAttempt{}); err != nil {
 		return err
 	}
 	return backfillPrimaryDomains(db)
@@ -53,6 +53,8 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	read.GET("/runs/domains", m.runDomains)
 	read.GET("/runs/:rid", m.runDetail)
 	read.GET("/runs/:rid/cases/:cid/evidence", m.caseEvidence)
+	read.GET("/runs/:rid/attempts", m.caseAttempts)
+	read.GET("/runs/:rid/export/custom", m.exportCustom)
 	read.GET("/runs/:rid/export", m.export)
 	read.GET("/runs/:rid/export/failed", m.exportFailedEvidence)
 	read.GET("/export/merged", m.exportMerged)
@@ -63,6 +65,7 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	write.POST("/runs/:rid/pause", func(c *gin.Context) { m.control(c, m.runner.Pause) })
 	write.POST("/runs/:rid/resume", func(c *gin.Context) { m.control(c, m.runner.Resume) })
 	write.POST("/runs/:rid/abort", m.abort)
+	write.POST("/runs/:rid/cases/:cid/recheck", m.recheckCase)
 }
 
 func (m *Module) suites(c *gin.Context) {
@@ -355,6 +358,69 @@ func (m *Module) control(c *gin.Context, action func(string) error) {
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
+}
+
+func (m *Module) recheckCase(c *gin.Context) {
+	run, ok := m.findRun(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		IncludeGates bool `json:"include_gates"`
+	}
+	_ = c.ShouldBindJSON(&input)
+	attempt, err := m.runner.StartCaseRecheck(run.ID, c.Param("cid"), input.IncludeGates)
+	if err != nil {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(202, attempt)
+}
+
+func (m *Module) caseAttempts(c *gin.Context) {
+	run, ok := m.findRun(c)
+	if !ok {
+		return
+	}
+	attempts, err := m.runCaseAttempts(run.ID)
+	if err != nil {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"cases": attempts})
+}
+
+func (m *Module) exportCustom(c *gin.Context) {
+	run, ok := m.findRun(c)
+	if !ok {
+		return
+	}
+	sources := m.customExportSources(c.Query("sources"))
+	rows, err := m.customExportRows(run.ID, sources)
+	if err != nil {
+		module.Fail(c, err)
+		return
+	}
+	rep := m.buildReport(run, rows, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
+	rep.Verdict = reportVerdict(rows)
+	rep.Summary = buildSummary(rows)
+	_, assessed, rate := compliance(rep.Summary)
+	if assessed > 0 {
+		rep.PassRate, rep.Grade = rate, gradeForRate(rate)
+	} else {
+		rep.PassRate, rep.Grade = 0, "—"
+	}
+	m.respondReport(c, rep, "llmadmit-custom-"+run.ID)
+}
+
+func reportVerdict(rows []CaseResult) string {
+	counts := map[string]int{}
+	for _, row := range rows {
+		if row.Status == suite.StatusFailed {
+			counts[normalizeLevel(row.Level)]++
+		}
+	}
+	return verdictText(counts)
 }
 
 func (m *Module) abort(c *gin.Context) {

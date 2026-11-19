@@ -18,10 +18,14 @@ import {
 import {
   abortRun,
   exportFailedEvidence,
+  exportCustomUrl,
   exportRun,
+  listCaseAttempts,
   pauseRun,
+  recheckCase,
   resumeRun,
   runDetail,
+  type CaseAttemptBundle,
   type CaseRow,
   type ExportDetail,
   type ExportFormat,
@@ -60,6 +64,10 @@ export default function RunDetailDrawer({
   const [exportType, setExportType] = useState<ExportType>("masked");
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
   const [watermark, setWatermark] = useState(true);
+  const [rechecking, setRechecking] = useState("");
+  const [includeGates, setIncludeGates] = useState(false);
+  const [attemptBundles, setAttemptBundles] = useState<CaseAttemptBundle[]>([]);
+  const [sourceMap, setSourceMap] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async (id: string) => {
     try {
@@ -77,11 +85,15 @@ export default function RunDetailDrawer({
     setExpanded(new Set());
     setCaseQuery("");
     setOnlyFailed(false);
+    setRechecking("");
+    setAttemptBundles([]);
+    setSourceMap({});
     if (!run) {
       setDetail(null);
       return;
     }
     refresh(run.id);
+    listCaseAttempts(run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
   }, [run, refresh]);
 
   useEffect(() => {
@@ -89,6 +101,35 @@ export default function RunDetailDrawer({
     const timer = setInterval(() => refresh(run.id), 3000);
     return () => clearInterval(timer);
   }, [run, refresh]);
+
+  useEffect(() => {
+    if (!rechecking || !detail) return;
+    const timer = setInterval(() => {
+      refresh(detail.run.id);
+      listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
+      onChanged();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [rechecking, detail?.run.id, refresh, onChanged]);
+
+  const startRecheck = async (caseID: string) => {
+    if (!detail) return;
+    setRechecking(caseID);
+    try {
+      await recheckCase(detail.run.id, caseID, includeGates);
+      addToast({ title: "已开始复测此细则" });
+      setTimeout(() => {
+        if (!detail) return;
+        refresh(detail.run.id);
+        listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
+        onChanged();
+      }, 1200);
+      setTimeout(() => setRechecking(""), 120000);
+    } catch (e) {
+      setRechecking("");
+      addToast({ title: (e as Error).message, color: "danger" });
+    }
+  };
 
   const act = async (fn: (id: string) => Promise<unknown>, id: string, message: string) => {
     try {
@@ -226,6 +267,44 @@ export default function RunDetailDrawer({
                       </div>
                     </details>
                   </div>
+                  <details className="rounded-medium border border-default-200 px-3 py-2">
+                    <summary className="cursor-pointer text-sm font-medium text-primary">按细则选择历史结果导出</summary>
+                    <p className="mt-2 text-xs text-default-400">默认使用当前最新结果；选择旧 attempt 后只影响本次导出，不修改当前报告。</p>
+                    <div className="mt-2 max-h-64 overflow-y-auto">
+                      {attemptBundles.map((bundle) => (
+                        <div key={bundle.case_id} className="flex flex-wrap items-center gap-2 border-b border-default-100 py-1.5 last:border-0">
+                          <span className="w-20 shrink-0 font-mono text-xs text-default-400">{bundle.case_id}</span>
+                          <span className="min-w-0 flex-1 truncate text-xs">{bundle.name}</span>
+                          <Select
+                            aria-label={`${bundle.case_id} 结果版本`}
+                            size="sm"
+                            className="w-52"
+                            selectedKeys={[sourceMap[bundle.case_id] || "current"]}
+                            onChange={(e) => setSourceMap((prev) => ({ ...prev, [bundle.case_id]: e.target.value }))}
+                          >
+                            {["current", ...bundle.attempts.map((a) => String(a.id))].map((id) => (
+                              <SelectItem key={id} textValue={id === "current" ? "当前最新" : `历史 #${id}`}>
+                                {id === "current" ? `当前最新 · ${bundle.current.status}` : (() => {
+                                  const a = bundle.attempts.find((x) => String(x.id) === id);
+                                  return a ? `#${a.attempt_no} ${a.status} · ${a.created_at.slice(5, 16)}` : `历史 #${id}`;
+                                })()}
+                              </SelectItem>
+                            ))}
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        size="sm"
+                        color="primary"
+                        variant="flat"
+                        onPress={() => window.open(exportCustomUrl(detail.run.id, sourceMap, exportType, exportFormat, exportDetail, watermark), "_blank")}
+                      >
+                        导出选择结果
+                      </Button>
+                    </div>
+                  </details>
                   <Divider />
                   <div className="flex flex-wrap items-center gap-2">
                     <Input size="sm" className="min-w-[220px] flex-1" label="筛选用例" placeholder="ID / 名称 / 说明" value={caseQuery} onValueChange={setCaseQuery} isClearable />
@@ -256,7 +335,29 @@ export default function RunDetailDrawer({
                           </div>
                           {row.summary && <p className="col-span-full truncate text-xs text-default-400">{row.summary}</p>}
                         </div>
-                        {expanded.has(row.id) && <EvidenceDetail runId={detail.run.id} row={row} />}
+                        {expanded.has(row.id) && (
+                          <>
+                            {["succeeded", "failed", "aborted"].includes(detail.run.status) && (
+                              <div className="flex flex-wrap items-center gap-3 border-t border-default-100 px-2 py-2">
+                                <label className="flex items-center gap-1 text-xs text-default-500">
+                                  <input type="checkbox" checked={includeGates} onChange={(e) => setIncludeGates(e.target.checked)} />
+                                  同时执行 G1/G2 前置闸门
+                                </label>
+                                <Button
+                                  size="sm"
+                                  variant="flat"
+                                  color="warning"
+                                  isLoading={rechecking === row.case_id}
+                                  onPress={() => startRecheck(row.case_id)}
+                                >
+                                  复测此细则
+                                </Button>
+                                <span className="text-[11px] text-default-400">只更新当前报告，不新增顶层任务</span>
+                              </div>
+                            )}
+                            <EvidenceDetail runId={detail.run.id} row={row} />
+                          </>
+                        )}
                       </div>
                     ))}
                   </div>

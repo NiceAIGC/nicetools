@@ -64,6 +64,9 @@ func (r *Runner) Recover() error {
 		Updates(map[string]any{"status": runAborted, "stop_reason": "服务重启，任务中断", "finished_at": &now}).Error; err != nil {
 		return err
 	}
+	if err := MarkInterruptedAttempts(r.db); err != nil {
+		return err
+	}
 	// 重启后继续消费持久化的排队任务。
 	r.dispatch()
 	return nil
