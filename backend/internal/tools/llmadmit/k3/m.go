@@ -1719,8 +1719,9 @@ func m59DynamicTools(c *suite.CaseCtx) suite.Outcome {
 
 	// 3) 多轮：先建立普通对话，再在后续轮注入动态工具。
 	firstTurn := map[string]any{
-		"messages":              userMsg("接下来会给你动态工具，先回复 ACK。"),
-		"max_completion_tokens": 512,
+		"messages": userMsg("接下来会给你动态工具，先回复 ACK。"),
+		// K3 会先输出思考链；512 很容易被 reasoning 吃光，正文为空。
+		"max_completion_tokens": 4096,
 		"reasoning_effort":      "low",
 	}
 	r3, retries3 := chat(c, firstTurn)
