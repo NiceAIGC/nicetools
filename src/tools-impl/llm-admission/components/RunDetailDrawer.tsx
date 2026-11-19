@@ -93,7 +93,7 @@ export default function RunDetailDrawer({
       return;
     }
     refresh(run.id);
-    listCaseAttempts(run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
+    listCaseAttempts(run.id).then((res) => setAttemptBundles(res.cases ?? [])).catch(() => {});
   }, [run, refresh]);
 
   useEffect(() => {
@@ -106,7 +106,7 @@ export default function RunDetailDrawer({
     if (!rechecking || !detail) return;
     const timer = setInterval(() => {
       refresh(detail.run.id);
-      listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
+      listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases ?? [])).catch(() => {});
       onChanged();
     }, 2500);
     return () => clearInterval(timer);
@@ -121,7 +121,7 @@ export default function RunDetailDrawer({
       setTimeout(() => {
         if (!detail) return;
         refresh(detail.run.id);
-        listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases)).catch(() => {});
+        listCaseAttempts(detail.run.id).then((res) => setAttemptBundles(res.cases ?? [])).catch(() => {});
         onChanged();
       }, 1200);
       setTimeout(() => setRechecking(""), 120000);
@@ -282,10 +282,10 @@ export default function RunDetailDrawer({
                             selectedKeys={[sourceMap[bundle.case_id] || "current"]}
                             onChange={(e) => setSourceMap((prev) => ({ ...prev, [bundle.case_id]: e.target.value }))}
                           >
-                            {["current", ...bundle.attempts.map((a) => String(a.id))].map((id) => (
+                            {["current", ...(bundle.attempts ?? []).map((a) => String(a.id))].map((id) => (
                               <SelectItem key={id} textValue={id === "current" ? "当前最新" : `历史 #${id}`}>
                                 {id === "current" ? `当前最新 · ${bundle.current.status}` : (() => {
-                                  const a = bundle.attempts.find((x) => String(x.id) === id);
+                                  const a = (bundle.attempts ?? []).find((x) => String(x.id) === id);
                                   return a ? `#${a.attempt_no} ${a.status} · ${a.created_at.slice(5, 16)}` : `历史 #${id}`;
                                 })()}
                               </SelectItem>

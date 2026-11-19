@@ -283,9 +283,13 @@ func (m *Module) runCaseAttempts(runID string) ([]map[string]any, error) {
 	for _, row := range rows {
 		current := row
 		current.Evidence = ""
+		attemptsForCase := byCase[row.CaseID]
+		if attemptsForCase == nil {
+			attemptsForCase = []CaseAttempt{}
+		}
 		out = append(out, map[string]any{
 			"case_id": row.CaseID, "name": row.Name, "level": row.Level, "group": row.Group,
-			"current": current, "attempts": byCase[row.CaseID],
+			"current": current, "attempts": attemptsForCase,
 		})
 	}
 	return out, nil
