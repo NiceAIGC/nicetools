@@ -461,7 +461,7 @@ func (m *Module) exportCustom(c *gin.Context) {
 	} else {
 		rep.PassRate, rep.Grade = 0, "—"
 	}
-	m.respondReport(c, rep, "llmadmit-custom-"+run.ID)
+	m.respondReport(c, rep, reportBase(run, "llmadmit-custom"))
 }
 
 func reportVerdict(rows []CaseResult) string {
@@ -489,6 +489,18 @@ func (m *Module) abort(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+// reportBase 生成默认导出文件名前缀：llmadmit-<主域名>-<任务ID>。
+func reportBase(run Run, prefix string) string {
+	domain := exportName(primaryDomain(run.BaseURL))
+	if domain == "" {
+		domain = "unknown-domain"
+	}
+	if prefix == "" {
+		prefix = "llmadmit"
+	}
+	return prefix + "-" + domain + "-" + run.ID
+}
+
 // export 导出报告：type=full|masked，format=json|md，channel 可覆盖渠道名；
 // 水印默认开启，watermark=0 可关闭。
 func (m *Module) export(c *gin.Context) {
@@ -502,7 +514,7 @@ func (m *Module) export(c *gin.Context) {
 		return
 	}
 	rep := m.buildReport(run, rows, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
-	m.respondReport(c, rep, "llmadmit-"+run.ID)
+	m.respondReport(c, rep, reportBase(run, "llmadmit"))
 }
 
 // exportMerged 合并多个任务导出：ids= id 逗号分隔，同用例取最新结果。
@@ -535,7 +547,12 @@ func (m *Module) exportMerged(c *gin.Context) {
 		rowsByID[run.ID] = rows
 	}
 	rep := m.buildMergedReport(runs, rowsByID, c.DefaultQuery("type", "full") == "masked", c.Query("channel"), c.Query("detail") == "brief")
-	m.respondReport(c, rep, "llmadmit-merged")
+	mergedBase := "llmadmit-merged"
+	if len(runs) > 0 {
+		newest := runs[len(runs)-1]
+		mergedBase = reportBase(newest, "llmadmit-merged")
+	}
+	m.respondReport(c, rep, mergedBase)
 }
 
 // sameMergeTarget 禁止跨渠道/网关/模型/标准合并，以免合并报告把不同被测目标混成一个结果。

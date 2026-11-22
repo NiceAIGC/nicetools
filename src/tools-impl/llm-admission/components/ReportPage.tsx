@@ -21,7 +21,6 @@ import {
 } from "../api";
 import {
   displayTime,
-  failedLevelText,
   gradeColor,
   groupStatus,
   hostOf,
@@ -119,7 +118,6 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
   });
   const [groupMode, setGroupMode] = useState<GroupMode>(() => readParam("group", "domain") === "host" ? "host" : "domain");
   const [selectedDomain, setSelectedDomain] = useState(() => readParam("domain", ""));
-  const [tab, setTab] = useState<"overview" | "history">(() => readParam("tab", "overview") === "history" ? "history" : "overview");
   const [detail, setDetail] = useState<Run | null>(null);
 
   const refresh = useCallback(async () => {
@@ -185,9 +183,8 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     set("sort", sort, "recent");
     set("group", groupMode, "domain");
     set("domain", selectedDomain, "");
-    set("tab", tab, "overview");
     window.history.replaceState(null, "", `${window.location.pathname}${p.toString() ? `?${p}` : ""}`);
-  }, [query, status, model, sort, groupMode, selectedDomain, tab]);
+  }, [query, status, model, sort, groupMode, selectedDomain]);
 
   const totalRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.run_count, 0), [sourceGroups]);
   const activeRuns = useMemo(() => sourceGroups.reduce((n, g) => n + g.active_count, 0), [sourceGroups]);
@@ -206,10 +203,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     }
   };
 
-  const pickDomain = (domain: string) => {
-    setSelectedDomain(domain);
-    setTab("overview");
-  };
+  const pickDomain = (domain: string) => setSelectedDomain(domain);
 
   if (loading) return <div className="flex justify-center py-16"><Spinner /></div>;
 
@@ -340,12 +334,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                 </div>
               )}
 
-              <div className="flex gap-1 border-b border-default-200 pb-2">
-                <Button size="sm" radius="full" variant={tab === "overview" ? "solid" : "light"} color={tab === "overview" ? "primary" : "default"} onPress={() => setTab("overview")}>概览</Button>
-                <Button size="sm" radius="full" variant={tab === "history" ? "solid" : "light"} color={tab === "history" ? "primary" : "default"} onPress={() => setTab("history")}>历史任务</Button>
-              </div>
-
-              {tab === "overview" && selectedLatest && (
+              {selectedLatest && (
                 <div className="flex flex-col gap-4">
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <div className="rounded-medium border border-default-200 px-3 py-2">
@@ -369,52 +358,48 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                       <p className="text-[11px] text-default-400">{displayTime(selectedLatest.created_at)}</p>
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 rounded-medium border border-default-200 px-3 py-3">
-                    <Chip size="sm" variant="flat" color={statusColor[selectedLatest.status]}>{statusLabel[selectedLatest.status]}</Chip>
-                    <span className="text-sm">{selectedLatest.model}</span>
-                    <span className="text-xs text-default-400">{selectedLatest.channel || "未命名"}</span>
-                    {failedLevelText(selectedGroup) && <span className="text-xs text-danger">{failedLevelText(selectedGroup)}</span>}
-                    <Button className="ml-auto" size="sm" variant="flat" onPress={() => setDetail(selectedLatest)}>完整详情</Button>
-                  </div>
                 </div>
               )}
 
-              {tab === "overview" && !selectedLatest && <p className="py-8 text-center text-sm text-default-400">暂无已完成任务</p>}
+              <div className="flex items-end justify-between gap-2 border-b border-default-200 pb-2">
+                <div>
+                  <h3 className="text-sm font-semibold">全部任务</h3>
+                  <p className="text-[11px] text-default-400">{selectedGroup.run_count} 次测试记录，按时间倒序</p>
+                </div>
+              </div>
 
-              {tab === "history" && (
-                <div className="flex flex-col gap-2">
-                  <div className="hidden grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_80px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400 lg:grid">
-                    <span>状态</span><span>任务 ID</span><span>结论</span><span>模型</span><span>范围</span><span>时间</span><span className="text-right">操作</span>
-                  </div>
-                  {selectedGroup.runs.map((run) => (
-                    <div key={run.id} className="grid gap-2 rounded-medium border border-default-100 px-2 py-2 hover:bg-default-50 lg:grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_80px] lg:items-center">
-                      <Chip size="sm" variant="flat" color={statusColor[run.status]} className="h-5 w-fit text-[10px]">{statusLabel[run.status]}</Chip>
-                      <span className="select-all truncate font-mono text-xs text-default-500">{run.id}</span>
-                      <div className="min-w-0">
-                        <p className={`truncate text-xs ${run.verdict?.startsWith("0 项") ? "text-success" : "text-danger"}`}>{run.verdict || "—"}</p>
-                        {run.grade && <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="mt-0.5 h-5 text-[10px]">{run.grade} {typeof run.pass_rate === "number" ? `${run.pass_rate.toFixed(1)}%` : ""}</Chip>}
-                      </div>
-                      <span className="truncate text-sm">{run.model}</span>
-                      <div className="flex flex-wrap gap-1">
-                        {(suite ? rangeSummary(run, suite) : []).slice(0, 3).map((item) => <Chip key={item.key} size="sm" variant="flat" className="h-5 text-[10px]">{item.label} {item.count}</Chip>)}
-                      </div>
-                      <span className="text-xs text-default-400">{displayTime(run.created_at)}</span>
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="flat" onPress={() => setDetail(run)}>详情</Button>
-                        {run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, run.id, "已请求暂停")}>暂停</Button>}
-                        {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
-                        {["queued", "running", "pausing", "paused"].includes(run.status) && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
-                      </div>
-                      {run.progress && runActive(run) && (
-                        <div className="col-span-full flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-                          <Progress size="sm" className="min-w-0 flex-1" value={run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0} />
-                          <span className="text-xs text-default-400">{progressLabel(run)}</span>
-                        </div>
-                      )}
+              <div className="flex max-h-[46vh] flex-col gap-2 overflow-y-auto pr-1">
+                <div className="hidden grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400 lg:grid">
+                  <span>状态</span><span>任务 ID</span><span>结论</span><span>模型</span><span>范围</span><span>时间</span><span className="text-right">操作</span>
+                </div>
+                {selectedGroup.runs.map((run) => (
+                  <div key={run.id} className="grid gap-2 rounded-medium border border-default-100 px-2 py-2 hover:bg-default-50 lg:grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] lg:items-center">
+                    <Chip size="sm" variant="flat" color={statusColor[run.status]} className="h-5 w-fit text-[10px]">{statusLabel[run.status]}</Chip>
+                    <span className="select-all truncate font-mono text-xs text-default-500">{run.id}</span>
+                    <div className="min-w-0">
+                      <p className={`truncate text-xs ${run.verdict?.startsWith("0 项") ? "text-success" : "text-danger"}`}>{run.verdict || "—"}</p>
+                      {run.grade && <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="mt-0.5 h-5 text-[10px]">{run.grade} {typeof run.pass_rate === "number" ? `${run.pass_rate.toFixed(1)}%` : ""}</Chip>}
                     </div>
-                  ))}
-                </div>
-              )}
+                    <span className="truncate text-sm">{run.model}</span>
+                    <div className="flex flex-wrap gap-1">
+                      {(suite ? rangeSummary(run, suite) : []).slice(0, 3).map((item) => <Chip key={item.key} size="sm" variant="flat" className="h-5 text-[10px]">{item.label} {item.count}</Chip>)}
+                    </div>
+                    <span className="text-xs text-default-400">{displayTime(run.created_at)}</span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      <Button size="sm" variant="flat" onPress={() => setDetail(run)}>详情</Button>
+                      {run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, run.id, "已请求暂停")}>暂停</Button>}
+                      {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
+                      {["queued", "running", "pausing", "paused"].includes(run.status) && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
+                    </div>
+                    {run.progress && runActive(run) && (
+                      <div className="col-span-full flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                        <Progress size="sm" className="min-w-0 flex-1" value={run.progress.total ? (run.progress.done / run.progress.total) * 100 : 0} />
+                        <span className="text-xs text-default-400">{progressLabel(run)}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </section>

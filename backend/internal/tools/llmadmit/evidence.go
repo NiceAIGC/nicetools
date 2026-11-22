@@ -228,6 +228,6 @@ func (m *Module) exportFailedEvidence(c *gin.Context) {
 		ext = "txt"
 		contentType = "text/plain; charset=utf-8"
 	}
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="llmadmit-failed-%s.%s"`, run.ID, ext))
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="llmadmit-failed-%s-%s.%s"`, exportName(primaryDomain(run.BaseURL)), run.ID, ext))
 	c.Data(200, contentType, []byte(b.String()))
 }
