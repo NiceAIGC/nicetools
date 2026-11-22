@@ -92,6 +92,9 @@ func (w *pdfWriter) hero(rep report) {
 	w.y += 27
 
 	scope := fmt.Sprintf("任务 ID：%s ｜ 渠道：%s ｜ 范围：%s ｜ 标准：%s", dashIfEmpty(rep.Environment.TaskID), orDash(rep.Environment.Channel), dashIfEmpty(rep.Environment.PresetName), dashIfEmpty(rep.Standard))
+	if rep.Environment.TaskNote != "" {
+		scope += " ｜ 任务备注：" + rep.Environment.TaskNote
+	}
 	w.paragraphAt(pdfMargin, 365, scope, 8.2, 12, colorMuted)
 	when := fmt.Sprintf("测试时间：%s ~ %s ｜ 用时 %s", stampText(rep.Environment.StartedAt), stampText(rep.Environment.EndedAt), durationText(rep.Environment.StartedAt, rep.Environment.EndedAt))
 	w.paragraphAt(pdfMargin, 365, when, 8.2, 12, colorMuted)

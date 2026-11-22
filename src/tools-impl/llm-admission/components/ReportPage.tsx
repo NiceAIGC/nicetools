@@ -14,6 +14,7 @@ import {
   listDomainGroups,
   pauseRun,
   saveDomainNote,
+  saveRunNote,
   resumeRun,
   type DomainGroup,
   type Run,
@@ -78,7 +79,7 @@ function groupMatches(group: DomainGroup, query: string, status: string, model: 
   if (status === "paused" && gs !== "paused") return false;
   if (!query) return true;
   const q = query.toLowerCase();
-  return [group.domain, group.note, group.name, ...group.hosts, ...group.models, ...group.channels, ...group.runs.map((r) => r.id)].join(" ").toLowerCase().includes(q);
+  return [group.domain, group.note, ...group.hosts, ...group.models, ...group.channels, ...group.runs.map((r) => `${r.id} ${r.task_note || ""}`)].join(" ").toLowerCase().includes(q);
 }
 
 export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; onStats?: (stats: { runs: number; active: number }) => void }) {
@@ -94,6 +95,9 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
   const [editingDomain, setEditingDomain] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
+  const [editingTaskID, setEditingTaskID] = useState("");
+  const [taskNoteDraft, setTaskNoteDraft] = useState("");
+  const [savingTaskNote, setSavingTaskNote] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -175,6 +179,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     setSelectedDomain(domain);
     setEditingDomain("");
     setNoteDraft("");
+    setEditingTaskID("");
   };
 
   const beginNote = (group: DomainGroup) => {
@@ -193,6 +198,20 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
       addToast({ title: (e as Error).message, color: "danger" });
     } finally {
       setSavingNote(false);
+    }
+  };
+
+  const saveTaskNote = async (runId: string) => {
+    setSavingTaskNote(true);
+    try {
+      await saveRunNote(runId, taskNoteDraft.trim());
+      addToast({ title: "任务备注已保存" });
+      setEditingTaskID("");
+      await refresh();
+    } catch (e) {
+      addToast({ title: (e as Error).message, color: "danger" });
+    } finally {
+      setSavingTaskNote(false);
     }
   };
 
@@ -265,7 +284,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                     <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold" title={title}>{title}</span>
                     {latest?.grade && <Chip size="sm" variant="flat" color={gradeColor(latest.grade)} className="h-5 text-[10px]">{latest.grade}</Chip>}
                   </div>
-                  <p className="mt-1 truncate text-xs text-default-500">{group.name || "未命名"} · {group.models.join(" / ")}</p>
+                  <p className="mt-1 truncate text-xs text-default-500">{group.models.join(" / ") || "—"}</p>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-default-400">
                     <span>{group.run_count} 个任务</span>
                     <span>{displayTime(latest?.created_at || "")}</span>
@@ -286,7 +305,6 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
               <div className="flex flex-wrap items-start gap-2">
                 <Button className="xl:hidden" size="sm" variant="light" onPress={() => setSelectedDomain("")}>返回</Button>
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs text-default-400">{selectedGroup.name || "未命名"}</p>
                   <div className="flex flex-wrap items-baseline gap-2">
                     <h2 className="break-all font-mono text-xl font-semibold sm:text-2xl">{selectedGroup.note ? `${selectedGroup.note}-${selectedGroup.domain}` : selectedGroup.domain}</h2>
                     <Chip size="sm" variant="flat" color={statusColor[groupStatus(selectedGroup)]} className="h-5 text-[10px]">{statusLabel[groupStatus(selectedGroup)]}</Chip>
@@ -341,6 +359,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                     <span className="select-all whitespace-nowrap font-mono text-xs text-default-500">{run.id}</span>
                     <div className="min-w-0">
                       {run.grade ? <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="h-5 text-[10px]">{run.grade}</Chip> : <span className="text-xs text-default-400">—</span>}
+                      {run.task_note && <p className="mt-0.5 truncate text-[11px] text-default-500">{run.task_note}</p>}
                     </div>
                     <span className="truncate text-sm">{run.model}</span>
                     <div className="flex flex-wrap gap-1">
@@ -348,11 +367,28 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                     </div>
                     <span className="text-xs text-default-400">{displayTime(run.created_at)}</span>
                     <div className="flex flex-wrap justify-end gap-1">
+                      <Button size="sm" variant="light" onPress={() => { setEditingTaskID(run.id); setTaskNoteDraft(run.task_note || ""); }}>{run.task_note ? "改任务备注" : "任务备注"}</Button>
                       <Button size="sm" variant="flat" onPress={() => setDetail(run)}>详情</Button>
                       {run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, run.id, "已请求暂停")}>暂停</Button>}
                       {["paused", "aborted"].includes(run.status) && <Button size="sm" variant="flat" color="primary" onPress={() => act(resumeRun, run.id, "已继续")}>继续</Button>}
                       {["queued", "running", "pausing", "paused"].includes(run.status) && <Button size="sm" variant="flat" color="danger" onPress={() => act(abortRun, run.id, "已终止")}>终止</Button>}
                     </div>
+                    {editingTaskID === run.id && (
+                      <div className="col-span-full flex flex-wrap items-center gap-2 border-t border-default-100 pt-2">
+                        <Input
+                          size="sm"
+                          autoFocus
+                          maxLength={120}
+                          className="min-w-[220px] flex-1"
+                          placeholder="本次任务备注，如：二次复测；留空保存可清除"
+                          value={taskNoteDraft}
+                          onValueChange={setTaskNoteDraft}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveTaskNote(run.id); } }}
+                        />
+                        <Button size="sm" color="primary" isLoading={savingTaskNote} onPress={() => void saveTaskNote(run.id)}>保存</Button>
+                        <Button size="sm" variant="light" onPress={() => setEditingTaskID("")}>取消</Button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

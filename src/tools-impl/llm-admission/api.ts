@@ -23,6 +23,7 @@ export interface SuiteInfo {
 
 export interface Run {
   id: string;
+  task_note?: string;
   created_by: string;
   suite: string;
   suite_name: string;
@@ -141,12 +142,15 @@ export interface CreateInput {
   base_url: string;
   api_key: string;
   model: string;
-  channel: string;
+  channel?: string;
   suite: string;
   preset: string;
   declarations: Record<string, boolean>;
   case_overrides: Record<string, "skip" | "exempt">;
   case_ids?: string[];
+  task_note?: string;
+  domain_note?: string;
+  domain_note_dirty?: boolean;
 }
 
 export type ExportFormat = "json" | "md" | "pdf";
@@ -177,6 +181,10 @@ export const listRuns = () => toolApi<Run[]>(ID, "/runs");
 export const listDomainGroups = () => toolApi<{ groups: DomainGroup[] }>(ID, "/runs/domains");
 export const saveDomainNote = (domain: string, note: string) =>
   toolApi<{ domain: string; note: string }>(ID, `/domains/${encodeURIComponent(domain)}/note`, json("PUT", { note }));
+export const getDomainProfile = (baseURL: string) =>
+  toolApi<{ domain: string; note: string }>(ID, `/domains/profile?base_url=${encodeURIComponent(baseURL)}`);
+export const saveRunNote = (runId: string, note: string) =>
+  toolApi<{ id: string; task_note: string }>(ID, `/runs/${runId}/note`, json("PUT", { note }));
 export const runDetail = (id: string) => toolApi<{ run: Run; cases: CaseRow[] }>(ID, `/runs/${id}`);
 export const caseEvidence = (runId: string, caseId: string) => toolApi<CaseEvidence>(ID, `/runs/${runId}/cases/${encodeURIComponent(caseId)}/evidence`);
 export const createRun = (input: CreateInput) => toolApi<Run>(ID, "/runs", json("POST", input));

@@ -28,8 +28,10 @@ type Run struct {
 	Preset string `json:"preset"`
 	// LegacyTier 仅读取旧任务的档位字段，保证升级前历史报告仍可识别范围。
 	LegacyTier string `gorm:"column:tier" json:"-"`
-	// Channel 是渠道标识（如「张三的 K3 渠道」），进入报告环境；导出时可覆盖。
+	// Channel 是历史渠道标识，仅用于旧报告兼容；不再参与域名组显示。
 	Channel string `json:"channel"`
+	// TaskNote 是本次任务备注（如「二次复测」），不参与域名聚合。
+	TaskNote string `json:"task_note,omitempty"`
 	// Declarations 是能力声明 JSON：{"video":false,...}；未声明支持的能力对应用例豁免。
 	Declarations string `json:"declarations"`
 	// CaseOverrides 是用例级自定义 JSON：{"M-30":"skip"|"exempt"}；

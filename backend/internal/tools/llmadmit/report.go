@@ -188,6 +188,7 @@ type mergedRun struct {
 type environment struct {
 	TaskID     string `json:"task_id,omitempty"`
 	Channel    string `json:"channel,omitempty"`
+	TaskNote   string `json:"task_note,omitempty"`
 	BaseURL    string `json:"base_url"`
 	Model      string `json:"model"`
 	Suite      string `json:"suite"`
@@ -369,6 +370,7 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 		Environment: environment{
 			TaskID:     run.ID,
 			Channel:    channel,
+			TaskNote:   run.TaskNote,
 			BaseURL:    run.BaseURL,
 			Model:      run.Model,
 			Suite:      run.Suite,
@@ -383,8 +385,11 @@ func (m *Module) buildReport(run Run, rows []CaseResult, masked bool, channel st
 	}
 	if masked {
 		rep.Environment.BaseURL = maskURL(run.BaseURL)
-		// 脱敏版连渠道名也隐去（渠道名可能暴露客户/供应商）。
+		// 脱敏版连渠道名/任务备注也隐去（可能暴露客户/供应商）。
 		rep.Environment.Channel = "已隐去"
+		if rep.Environment.TaskNote != "" {
+			rep.Environment.TaskNote = "已隐去"
+		}
 	}
 	if run.StartedAt != nil {
 		rep.Environment.StartedAt = run.StartedAt.In(reportLocation).Format(time.RFC3339)
@@ -636,8 +641,12 @@ func renderMarkdown(rep report) string {
 	if assessed > 0 {
 		rateText = fmt.Sprintf("%.1f%%（通过 %d / 考核 %d 项）", rate, passed, assessed)
 	}
-	fmt.Fprintf(&b, "| 项 | 值 |\n|---|---|\n| 任务 ID | `%s` |\n| 渠道 | %s |\n| 网关 | `%s` |\n| 模型 | `%s` |\n| 范围 | %s |\n| 通过率 | **%s** |\n| 评级 | **%s** |\n| 时段 | %s ~ %s (%s) |\n\n",
+	fmt.Fprintf(&b, "| 项 | 值 |\n|---|---|\n| 任务 ID | `%s` |\n| 渠道 | %s |\n| 网关 | `%s` |\n| 模型 | `%s` |\n| 范围 | %s |\n| 通过率 | **%s** |\n| 评级 | **%s** |\n| 时段 | %s ~ %s (%s) |\n",
 		rep.Environment.TaskID, channel, rep.Environment.BaseURL, rep.Environment.Model, rep.Environment.PresetName, rateText, rep.Grade, rep.Environment.StartedAt, rep.Environment.EndedAt, rep.Environment.Timezone)
+	if rep.Environment.TaskNote != "" {
+		fmt.Fprintf(&b, "| 任务备注 | %s |\n", rep.Environment.TaskNote)
+	}
+	b.WriteString("\n")
 	if len(rep.Merged) > 0 {
 		fmt.Fprintf(&b, "本报告合并自 %d 次测试：\n\n| 任务 | 范围 | 完成时间 | 结论 |\n|---|---|---|---|\n", len(rep.Merged))
 		for _, item := range rep.Merged {

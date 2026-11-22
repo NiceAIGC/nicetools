@@ -55,6 +55,7 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	read.GET("/suites", m.suites)
 	read.GET("/runs", m.runs)
 	read.GET("/runs/domains", m.runDomains)
+	read.GET("/domains/profile", m.domainProfile)
 	read.GET("/runs/:rid", m.runDetail)
 	read.GET("/runs/:rid/cases/:cid/evidence", m.caseEvidence)
 	read.GET("/runs/:rid/attempts", m.caseAttempts)
@@ -73,6 +74,7 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	write.POST("/runs/:rid/resume", func(c *gin.Context) { m.control(c, m.runner.Resume) })
 	write.POST("/runs/:rid/abort", m.abort)
 	write.POST("/runs/:rid/cases/:cid/recheck", m.recheckCase)
+	write.PUT("/runs/:rid/note", m.putRunNote)
 }
 
 func (m *Module) suites(c *gin.Context) {
@@ -275,26 +277,71 @@ func (m *Module) putDomainNote(c *gin.Context) {
 		module.Fail(c, service.Problem(400, "备注不能超过 120 个字"))
 		return
 	}
-	var row DomainNote
-	err := m.db.Where("domain = ?", domain).First(&row).Error
-	switch {
-	case err == nil:
-		// Update 显式写列，空字符串也必须落库，不能用 FirstOrCreate+Assign
-		// 的零值更新（会跳过空备注）。
-		if err := m.db.Model(&DomainNote{}).Where("domain = ?", domain).Update("note", note).Error; err != nil {
-			module.Fail(c, err)
-			return
-		}
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		if err := m.db.Create(&DomainNote{Domain: domain, Note: note}).Error; err != nil {
-			module.Fail(c, err)
-			return
-		}
-	default:
+	if err := m.saveDomainNote(domain, note); err != nil {
 		module.Fail(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"domain": domain, "note": note})
+}
+
+// saveDomainNote 显式写列，空字符串也必须落库；空备注表示清除显示前缀。
+func (m *Module) saveDomainNote(domain, note string) error {
+	var row DomainNote
+	err := m.db.Where("domain = ?", domain).First(&row).Error
+	switch {
+	case err == nil:
+		return m.db.Model(&DomainNote{}).Where("domain = ?", domain).Update("note", note).Error
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return m.db.Create(&DomainNote{Domain: domain, Note: note}).Error
+	default:
+		return err
+	}
+}
+
+// domainProfile 供提交表单按网关地址自动带出域名备注。
+func (m *Module) domainProfile(c *gin.Context) {
+	baseURL := strings.TrimSpace(c.Query("base_url"))
+	if baseURL == "" {
+		module.Fail(c, service.Problem(400, "缺少网关地址"))
+		return
+	}
+	domain := primaryDomain(baseURL)
+	if domain == "" {
+		module.Fail(c, service.Problem(400, "无法识别域名"))
+		return
+	}
+	var row DomainNote
+	err := m.db.Where("domain = ?", domain).First(&row).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"domain": domain, "note": row.Note})
+}
+
+// putRunNote 修改单次任务备注；不影响域名备注。
+func (m *Module) putRunNote(c *gin.Context) {
+	run, ok := m.findRun(c)
+	if !ok {
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		module.Fail(c, service.Problem(400, "备注格式错误"))
+		return
+	}
+	note := strings.TrimSpace(input.Note)
+	if len([]rune(note)) > 120 {
+		module.Fail(c, service.Problem(400, "任务备注不能超过 120 个字"))
+		return
+	}
+	if err := m.db.Model(&Run{}).Where("id = ?", run.ID).Update("task_note", note).Error; err != nil {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"id": run.ID, "task_note": note})
 }
 
 func (m *Module) runDomains(c *gin.Context) {
@@ -374,15 +421,18 @@ func normalizeBaseURL(raw string) string {
 }
 
 type createInput struct {
-	BaseURL      string            `json:"base_url"`
-	APIKey       string            `json:"api_key"`
-	Model        string            `json:"model"`
-	Channel      string            `json:"channel"`
-	Suite        string            `json:"suite"`
-	Preset       string            `json:"preset"`
-	Declarations map[string]bool   `json:"declarations"`
-	Overrides    map[string]string `json:"case_overrides"`
-	CaseIDs      []string          `json:"case_ids"`
+	BaseURL         string            `json:"base_url"`
+	APIKey          string            `json:"api_key"`
+	Model           string            `json:"model"`
+	Channel         string            `json:"channel"`
+	TaskNote        string            `json:"task_note"`
+	DomainNote      string            `json:"domain_note"`
+	DomainNoteDirty bool              `json:"domain_note_dirty"`
+	Suite           string            `json:"suite"`
+	Preset          string            `json:"preset"`
+	Declarations    map[string]bool   `json:"declarations"`
+	Overrides       map[string]string `json:"case_overrides"`
+	CaseIDs         []string          `json:"case_ids"`
 }
 
 func (m *Module) create(c *gin.Context) {
@@ -421,6 +471,19 @@ func (m *Module) create(c *gin.Context) {
 		return
 	}
 	input.Channel = strings.TrimSpace(input.Channel)
+	input.TaskNote = strings.TrimSpace(input.TaskNote)
+	input.DomainNote = strings.TrimSpace(input.DomainNote)
+	if len([]rune(input.TaskNote)) > 120 || len([]rune(input.DomainNote)) > 120 {
+		module.Fail(c, service.Problem(400, "备注不能超过 120 个字"))
+		return
+	}
+	domain := primaryDomain(input.BaseURL)
+	if input.DomainNoteDirty && domain != "" {
+		if err := m.saveDomainNote(domain, input.DomainNote); err != nil {
+			module.Fail(c, err)
+			return
+		}
+	}
 	preset, ok := suite.ParseGroup(input.Preset)
 	if !ok {
 		module.Fail(c, service.Problem(400, "预设仅支持 format/cache/latency 或留空全测"))
@@ -439,6 +502,13 @@ func (m *Module) create(c *gin.Context) {
 	if err != nil {
 		module.Fail(c, err)
 		return
+	}
+	if input.TaskNote != "" {
+		if err := m.db.Model(&Run{}).Where("id = ?", run.ID).Update("task_note", input.TaskNote).Error; err != nil {
+			module.Fail(c, err)
+			return
+		}
+		run.TaskNote = input.TaskNote
 	}
 	c.JSON(201, run)
 }

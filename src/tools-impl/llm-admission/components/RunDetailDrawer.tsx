@@ -161,7 +161,7 @@ export default function RunDetailDrawer({
             <DrawerHeader className="flex flex-col gap-2 border-b border-default-200 pb-3">
               <div className="flex w-full flex-wrap items-start gap-2">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs text-default-400">任务详情 · {detail?.run.channel || "未命名任务"}</p>
+                  <p className="truncate text-xs text-default-400">任务详情 · {detail?.run.model || "大模型准入"}</p>
                   <div className="mt-0.5 flex flex-wrap items-baseline gap-2">
                     <span className="break-all font-mono text-lg font-semibold sm:text-xl">{detail ? hostOf(detail.run.base_url) : "任务详情"}</span>
                     <span className="text-sm text-default-500">{detail?.run.model}</span>
@@ -173,6 +173,7 @@ export default function RunDetailDrawer({
                       任务 ID：<span className="select-all font-mono text-default-500">{detail.run.id}</span> · {displayTime(detail.run.created_at)} · {detail.run.done_cases}/{detail.run.total_cases} 项
                     </p>
                   )}
+                  {detail?.run.task_note && <p className="mt-1 text-xs text-warning">任务备注：{detail.run.task_note}</p>}
                 </div>
                 <Button size="sm" variant="light" onPress={close}>关闭</Button>
               </div>

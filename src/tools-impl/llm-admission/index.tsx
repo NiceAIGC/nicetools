@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import {
   addToast,
@@ -15,6 +15,7 @@ import {
 
 import {
   createRun,
+  getDomainProfile,
   listDomainGroups,
   listSuites,
   type SuiteCase,
@@ -34,14 +35,14 @@ interface SavedTarget {
   base_url: string;
   api_key: string;
   model: string;
-  channel: string;
 }
 
 function loadTarget(): SavedTarget {
   try {
-    return { base_url: "", api_key: "", model: "", channel: "", ...JSON.parse(localStorage.getItem(TARGET_KEY) ?? "{}") };
+    const saved = JSON.parse(localStorage.getItem(TARGET_KEY) ?? "{}");
+    return { base_url: saved.base_url ?? "", api_key: saved.api_key ?? "", model: saved.model ?? "" };
   } catch {
-    return { base_url: "", api_key: "", model: "", channel: "" };
+    return { base_url: "", api_key: "", model: "" };
   }
 }
 
@@ -78,8 +79,14 @@ export default function LlmAdmission() {
   const [suiteId, setSuiteId] = useState("");
   const [baseURL, setBaseURL] = useState(savedTarget.base_url);
   const [apiKey, setAPIKey] = useState(savedTarget.api_key);
-  const [channel, setChannel] = useState(savedTarget.channel);
   const [model, setModel] = useState(savedTarget.model);
+  const [domainNote, setDomainNote] = useState("");
+  const [taskNote, setTaskNote] = useState("");
+  const [detectedDomain, setDetectedDomain] = useState("");
+  const [domainNoteDirty, setDomainNoteDirty] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const domainLookupSeq = useRef(0);
+  const domainNoteDirtyRef = useRef(false);
   const [preset, setPreset] = useState("");
   const [selectedCases, setSelectedCases] = useState<Set<string>>(new Set());
   const [caseQuery, setCaseQuery] = useState("");
@@ -87,6 +94,35 @@ export default function LlmAdmission() {
   const [casesOpen, setCasesOpen] = useState(false);
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const lookupDomain = async (raw: string) => {
+    const normalized = normalizeGateway(raw);
+    if (!normalized) {
+      setDetectedDomain("");
+      setDomainNote("");
+      setDomainNoteDirty(false);
+      domainNoteDirtyRef.current = false;
+      return;
+    }
+    const seq = ++domainLookupSeq.current;
+    setProfileLoading(true);
+    try {
+      const profile = await getDomainProfile(normalized);
+      if (seq !== domainLookupSeq.current) return;
+      const changed = profile.domain !== detectedDomain;
+      setDetectedDomain(profile.domain);
+      // 同一域名下不覆盖用户正在编辑的内容；切换域名时带入新域名的备注。
+      if (changed || !domainNoteDirtyRef.current) {
+        setDomainNote(profile.note);
+        setDomainNoteDirty(false);
+        domainNoteDirtyRef.current = false;
+      }
+    } catch {
+      // 自动带出失败不阻塞提交，用户仍可手动填写。
+    } finally {
+      if (seq === domainLookupSeq.current) setProfileLoading(false);
+    }
+  };
 
   useEffect(() => {
     listSuites()
@@ -123,6 +159,12 @@ export default function LlmAdmission() {
       .catch(() => {
         // 历史模型只做建议，不影响新建测试。
       });
+  }, []);
+
+  useEffect(() => {
+    if (savedTarget.base_url) void lookupDomain(savedTarget.base_url);
+    // 只在首次加载时带出已保存网关的域名备注。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const suite = suites.find((s) => s.id === suiteId) ?? suites[0];
@@ -238,14 +280,19 @@ export default function LlmAdmission() {
         base_url: baseURL,
         api_key: apiKey,
         model,
-        channel,
         suite: suite.id,
         preset,
         declarations: {},
         case_overrides: {},
         case_ids: selectedIDs,
+        task_note: taskNote.trim(),
+        domain_note: domainNote.trim(),
+        domain_note_dirty: domainNoteDirty,
       });
-      localStorage.setItem(TARGET_KEY, JSON.stringify({ base_url: baseURL, api_key: apiKey, model, channel }));
+      localStorage.setItem(TARGET_KEY, JSON.stringify({ base_url: baseURL, api_key: apiKey, model }));
+      setTaskNote("");
+      setDomainNoteDirty(false);
+      domainNoteDirtyRef.current = false;
       addToast({ title: "测试已启动，正在加入队列" });
       setView("reports");
     } catch (e) {
@@ -282,8 +329,11 @@ export default function LlmAdmission() {
                 <p className="mt-1 text-xs text-default-400">网关地址与模型进入报告；密钥只存本机浏览器。</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Input label="名称 / 渠道" placeholder="如：yropc K3" value={channel} onValueChange={setChannel} description="显示在报告域名组上" />
-                <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} onBlur={() => setBaseURL((v) => normalizeGateway(v))} isRequired />
+                <Input label="网关地址" placeholder="https://api.example.com/v1" value={baseURL} onValueChange={setBaseURL} onBlur={() => {
+                  const next = normalizeGateway(baseURL);
+                  setBaseURL(next);
+                  void lookupDomain(next);
+                }} isRequired />
                 <Input
                   label="密钥"
                   type={showKey ? "text" : "password"}
@@ -327,6 +377,24 @@ export default function LlmAdmission() {
                 <Select label="测试范围" selectedKeys={[preset || "all"]} onChange={(e) => setPreset(e.target.value === "all" ? "" : e.target.value)}>
                   {suite.presets.map((p) => <SelectItem key={p.key || "all"} description={p.hint}>{p.label}</SelectItem>)}
                 </Select>
+                <Input
+                  className="sm:col-span-2"
+                  label="域名备注（该域名共享）"
+                  maxLength={120}
+                  placeholder="如：张三的渠道；留空保存可清除"
+                  value={domainNote}
+                  onValueChange={(value) => { setDomainNote(value); setDomainNoteDirty(true); domainNoteDirtyRef.current = true; }}
+                  description={profileLoading ? "正在读取该域名已有备注…" : detectedDomain ? (domainNote ? `已自动带入 ${detectedDomain} 的域名备注；修改会同步到该域名所有任务` : `${detectedDomain} 暂无域名备注`) : "输入网关地址后自动带出该域名已有备注"}
+                />
+                <Input
+                  className="sm:col-span-2"
+                  label="本次任务备注（可选）"
+                  maxLength={120}
+                  placeholder="如：二次复测"
+                  value={taskNote}
+                  onValueChange={setTaskNote}
+                  description="只属于本次任务，不影响域名备注"
+                />
               </div>
 
               <div className="rounded-large border border-default-200">
@@ -393,8 +461,9 @@ export default function LlmAdmission() {
           <div className="flex h-fit flex-col gap-3 rounded-large border border-default-200 bg-default-50/60 p-4 xl:sticky xl:top-20">
             <h3 className="text-sm font-semibold">提交摘要</h3>
             <div className="flex flex-col gap-1 text-sm">
-              <div className="flex justify-between gap-3"><span className="text-default-400">名称</span><span className="truncate text-right">{channel || "未命名"}</span></div>
-              <div className="flex justify-between gap-3"><span className="text-default-400">域名</span><span className="truncate text-right font-mono">{(() => { try { return new URL(baseURL).host || "—"; } catch { return "—"; } })()}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">域名</span><span className="truncate text-right font-mono">{detectedDomain || (() => { try { return new URL(baseURL).host || "—"; } catch { return "—"; } })()}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">域名备注</span><span className="max-w-[220px] truncate text-right">{domainNote || "—"}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-default-400">任务备注</span><span className="max-w-[220px] truncate text-right">{taskNote || "—"}</span></div>
               <div className="flex justify-between gap-3"><span className="text-default-400">模型</span><span className="truncate text-right">{model || "—"}</span></div>
               <div className="flex justify-between gap-3"><span className="text-default-400">范围</span><span className="text-right">{preset ? suite.presets.find((p) => p.key === preset)?.label : "全部"}</span></div>
               <div className="flex justify-between gap-3"><span className="text-default-400">用例</span><span className="tabular-nums">{selectedCases.size} 项</span></div>
