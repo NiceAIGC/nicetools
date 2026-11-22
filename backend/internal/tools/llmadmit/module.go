@@ -217,6 +217,9 @@ func (m *Module) runDomains(c *gin.Context) {
 
 func (m *Module) runs(c *gin.Context) {
 	var list []Run
+	if m.runner != nil {
+		m.runner.ReconcileStale()
+	}
 	if err := m.db.Order("created_at DESC").Limit(100).Find(&list).Error; err != nil {
 		module.Fail(c, err)
 		return

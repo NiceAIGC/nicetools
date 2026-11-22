@@ -1410,6 +1410,10 @@ func mB3CacheTTL(c *suite.CaseCtx) suite.Outcome {
 			if err := c.CheckControl(); err != nil {
 				return pass("TTL 探测被中断", map[string]any{"decay_curve": curve}, evidence...)
 			}
+			if c.Progress != nil {
+				waited := sec - remaining
+				c.Progress(idx, len(checkpoints), fmt.Sprintf("TTL %ds：等待 %ds", sec, waited))
+			}
 			time.Sleep(time.Duration(min(remaining, 2)) * time.Second)
 		}
 		previous = sec

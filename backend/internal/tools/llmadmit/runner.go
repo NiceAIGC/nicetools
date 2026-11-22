@@ -110,13 +110,20 @@ func (r *Runner) setProgress(runID string, p RunProgress) {
 		current = &p
 		r.progress[runID] = current
 	} else {
-		if p.CaseID != "" {
+		if p.CaseID != "" && p.CaseID != current.CaseID {
+			// 切到新用例时必须清空上一条用例的步骤，否则会显示 M-B1 + EOS 抑制这种错位进度。
 			current.CaseID, current.CaseName = p.CaseID, p.CaseName
-		}
-		if p.Step != "" {
 			current.Step = p.Step
+			current.Done, current.Total = p.Done, p.Total
+		} else {
+			if p.CaseID != "" {
+				current.CaseID, current.CaseName = p.CaseID, p.CaseName
+			}
+			if p.Step != "" {
+				current.Step = p.Step
+			}
+			current.Done, current.Total = p.Done, p.Total
 		}
-		current.Done, current.Total = p.Done, p.Total
 	}
 	current.UpdatedAt = now
 }
@@ -344,13 +351,15 @@ func (r *Runner) Abort(id string, actor string) error {
 		return service.Problem(409, "任务已结束")
 	}
 	r.mu.Lock()
+	// 只有终止“当前真正在跑”的任务时才取消循环；终止 queued/paused 任务
+	// 绝不能误伤另一个正在运行的任务，否则会留下永远 running 的僵尸状态。
+	active := r.activeID == id
 	cancel, done := r.cancel, r.done
 	r.mu.Unlock()
-	if cancel != nil {
+	if active && cancel != nil {
 		cancel()
 	}
-	// 等旧循环释放单飞槽，避免用户很快点“继续”时启动两个循环。
-	if done != nil {
+	if active && done != nil {
 		select {
 		case <-done:
 		case <-time.After(30 * time.Second):
@@ -457,6 +466,29 @@ func (r *Runner) markPaused(runID string) {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// ReconcileStale 把“状态还是 running/pausing、但已经不是当前 activeID”的任务
+// 标成中断，修复历史上误终止 queued 任务导致的状态残留。
+func (r *Runner) ReconcileStale() {
+	r.mu.Lock()
+	active := r.activeID
+	r.mu.Unlock()
+	if active == "" {
+		return
+	}
+	var runs []Run
+	if err := r.db.Where("status IN ?", []string{runRunning, runPausing}).Find(&runs).Error; err != nil {
+		return
+	}
+	now := time.Now()
+	for _, run := range runs {
+		if run.ID == active {
+			continue
+		}
+		r.db.Model(&Run{}).Where("id = ? AND status IN ?", run.ID, []string{runRunning, runPausing}).
+			Updates(map[string]any{"status": runAborted, "stop_reason": "调度器已脱离，任务标记中断", "finished_at": &now})
 	}
 }
 

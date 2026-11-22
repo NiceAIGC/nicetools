@@ -343,6 +343,37 @@ func TestRunnerQueuesSecondRun(t *testing.T) {
 	}
 }
 
+// 终止 queued 任务不能误伤当前 running 任务（历史并发/僵尸状态根因）。
+func TestRunnerAbortQueuedDoesNotCancelActive(t *testing.T) {
+	server := fakeGateway(180 * time.Millisecond)
+	defer server.Close()
+	r, _ := setupRunner(t)
+	target := suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}
+	first, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Abort(second.ID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	// 第一个任务必须继续跑完；第二个必须是 aborted。
+	final := waitStatus(t, r, first.ID, 60*time.Second, runSucceeded, runFailed, runAborted)
+	if final.Status == runAborted {
+		t.Fatalf("active run was canceled by aborting a queued run")
+	}
+	if final.DoneCases != final.TotalCases {
+		t.Fatalf("active run incomplete: %d/%d", final.DoneCases, final.TotalCases)
+	}
+	got, _ := r.loadRun(second.ID)
+	if got.Status != runAborted {
+		t.Fatalf("queued run status=%s want aborted", got.Status)
+	}
+}
+
 // 暂停任务不占用执行槽：后续 queued 任务应能自动开始，而不是等暂停任务“继续”。
 func TestRunnerPausedDoesNotBlockQueue(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
