@@ -134,6 +134,10 @@ func pass(summary string, metrics map[string]any, evidence ...suite.Evidence) su
 	return suite.Outcome{Status: suite.StatusPassed, Summary: summary, Metrics: metrics, Evidence: evidence}
 }
 
+func passWithWarnings(summary string, metrics map[string]any, defects []suite.Defect, evidence ...suite.Evidence) suite.Outcome {
+	return suite.Outcome{Status: suite.StatusPassed, Summary: summary, Metrics: metrics, Defects: defects, Evidence: evidence}
+}
+
 func fail(summary string, defects []suite.Defect, evidence ...suite.Evidence) suite.Outcome {
 	return suite.Outcome{Status: suite.StatusFailed, Summary: summary, Defects: defects, Evidence: evidence}
 }

@@ -249,8 +249,8 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
 
       {error && <p className="rounded-medium bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
 
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className={`${selectedDomain ? "hidden lg:block" : "block"} min-w-0`}>
+      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className={`${selectedDomain ? "hidden xl:block" : "block"} min-w-0`}>
           <div className="flex items-center justify-between px-1 pb-2 text-xs text-default-400">
             <span>{visibleGroups.length} 个域名</span>
             <Button size="sm" variant="light" onPress={refresh}>刷新</Button>
@@ -294,7 +294,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
           </div>
         </aside>
 
-        <section className={`${selectedDomain ? "block" : "hidden lg:block"} min-w-0`}>
+        <section className={`${selectedDomain ? "block" : "hidden xl:block"} min-w-0`}>
           {!selectedGroup ? (
             <div className="flex min-h-[320px] items-center justify-center rounded-large border border-dashed border-default-200 text-sm text-default-400">
               选择左侧域名查看报告
@@ -302,7 +302,7 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
           ) : (
             <div className="flex flex-col gap-4 rounded-large border border-default-200 p-4 sm:p-5">
               <div className="flex flex-wrap items-start gap-2">
-                <Button className="lg:hidden" size="sm" variant="light" onPress={() => setSelectedDomain("")}>返回</Button>
+                <Button className="xl:hidden" size="sm" variant="light" onPress={() => setSelectedDomain("")}>返回</Button>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-default-400">{selectedGroup.name || "未命名"}</p>
                   <div className="flex flex-wrap items-baseline gap-2">
@@ -369,13 +369,13 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
               </div>
 
               <div className="flex max-h-[46vh] flex-col gap-2 overflow-y-auto pr-1">
-                <div className="hidden grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400 lg:grid">
+                <div className="hidden xl:grid xl:grid-cols-[72px_128px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] gap-2 border-b border-default-200 px-2 pb-2 text-[11px] text-default-400">
                   <span>状态</span><span>任务 ID</span><span>结论</span><span>模型</span><span>范围</span><span>时间</span><span className="text-right">操作</span>
                 </div>
                 {selectedGroup.runs.map((run) => (
-                  <div key={run.id} className="grid gap-2 rounded-medium border border-default-100 px-2 py-2 hover:bg-default-50 lg:grid-cols-[72px_80px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] lg:items-center">
+                  <div key={run.id} className="grid gap-2 rounded-medium border border-default-100 px-2 py-2 hover:bg-default-50 xl:grid-cols-[72px_128px_minmax(130px,1.2fr)_minmax(80px,.7fr)_minmax(90px,.8fr)_100px_150px] xl:items-center">
                     <Chip size="sm" variant="flat" color={statusColor[run.status]} className="h-5 w-fit text-[10px]">{statusLabel[run.status]}</Chip>
-                    <span className="select-all truncate font-mono text-xs text-default-500">{run.id}</span>
+                    <span className="select-all whitespace-nowrap font-mono text-xs text-default-500">{run.id}</span>
                     <div className="min-w-0">
                       <p className={`truncate text-xs ${run.verdict?.startsWith("0 项") ? "text-success" : "text-danger"}`}>{run.verdict || "—"}</p>
                       {run.grade && <Chip size="sm" variant="flat" color={gradeColor(run.grade)} className="mt-0.5 h-5 text-[10px]">{run.grade} {typeof run.pass_rate === "number" ? `${run.pass_rate.toFixed(1)}%` : ""}</Chip>}

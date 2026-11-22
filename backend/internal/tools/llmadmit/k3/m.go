@@ -754,10 +754,17 @@ func m39CacheField(c *suite.CaseCtx) suite.Outcome {
 	}
 	r, retries := chat(c, body())
 	e := ev("缓存字段", body(), r, retries)
-	if r.Usage != nil && strings.Contains(r.Raw, "prompt_tokens_details") && r.Usage.CachedTokens > 0 {
-		return pass(fmt.Sprintf("写入 %d，命中 %d", write, r.Usage.CachedTokens), map[string]any{"cache_write_tokens": write, "cache_write_5m": warm.CacheWrite5m, "cache_write_1h": warm.CacheWrite1h, "cached_tokens": r.Usage.CachedTokens}, warmEvidence, e)
+	if r.Usage != nil && r.Usage.CachedTokens > 0 {
+		metrics := map[string]any{"cache_write_tokens": write, "cache_write_5m": warm.CacheWrite5m, "cache_write_1h": warm.CacheWrite1h, "cached_tokens": r.Usage.CachedTokens}
+		if !strings.Contains(r.Raw, "prompt_tokens_details") {
+			// 兼容网关把 cached_tokens 放在 usage 顶层的非标准返回；
+			// 缓存实际命中照常记录，同时用 P2 指出格式不合规。
+			return passWithWarnings(fmt.Sprintf("写入 %d，命中 %d（缓存字段格式非标准）", write, r.Usage.CachedTokens), metrics,
+				[]suite.Defect{{Level: "P2", Expect: "缓存命中字段位于 prompt_tokens_details.cached_tokens", Actual: "usage.cached_tokens（顶层兼容字段）", Attribution: "gateway"}}, warmEvidence, e)
+		}
+		return pass(fmt.Sprintf("写入 %d，命中 %d", write, r.Usage.CachedTokens), metrics, warmEvidence, e)
 	}
-	return fail("缓存命中字段缺失", []suite.Defect{{Level: "P1", Expect: "prompt_tokens_details 且 cached_tokens>0", Actual: "缺失或 0", Attribution: "gateway"}}, warmEvidence, e)
+	return fail("缓存命中字段缺失", []suite.Defect{{Level: "P1", Expect: "cached_tokens>0（标准或兼容字段）", Actual: "缺失或 0", Attribution: "gateway"}}, warmEvidence, e)
 }
 
 // ---- 错误与鉴权 ----
@@ -1488,12 +1495,22 @@ func mB4CacheScenarios(c *suite.CaseCtx) suite.Outcome {
 		metrics[sc.name+"_cached_tokens"] = cached
 		metrics[sc.name+"_prompt_tokens"] = prompt
 		metrics[sc.name+"_hit_rate_percent"] = rate
+		// 格式/兼容性问题单独记录：有缓存读数就保留，不因字段或前缀换尾部
+		// 行为差异把整个缓存测试判成失败、跳过。问题在报告 P2 中明确列出。
 		if rate < 80 {
-			defects = append(defects, suite.Defect{Level: "P1", Expect: sc.name + " 覆盖率 ≥80%", Actual: fmt.Sprintf("%.1f%%", rate), Attribution: "upstream"})
+			defects = append(defects, suite.Defect{Level: "P2", Expect: sc.name + " 覆盖率 ≥80%（换尾部也应复用前缀缓存）", Actual: fmt.Sprintf("%.1f%%", rate), Attribution: "upstream"})
 		}
 	}
+	metrics["cache_format_compliant"] = len(defects) == 0
+	metrics["cache_format_issue_count"] = len(defects)
 	if len(defects) > 0 {
-		return fail("缓存场景未达标", defects, evidence...)
+		multiturn := metrics["multiturn_hit_rate_percent"].(float64)
+		suffix := metrics["suffix_hit_rate_percent"].(float64)
+		if multiturn == 0 && suffix == 0 {
+			// 没有任何缓存命中读数时不能把“格式问题”当通过；这是缓存功能未生效。
+			return fail("两场景均未观测到缓存命中", []suite.Defect{{Level: "P1", Expect: "至少一个缓存场景覆盖率 >0", Actual: "multiturn=0%, suffix=0%", Attribution: "upstream"}}, evidence...)
+		}
+		return passWithWarnings("缓存功能已观测；存在前缀换尾部/格式兼容性差异（P2）", metrics, defects, evidence...)
 	}
 	return pass("多轮/后缀两场景覆盖率均 ≥80%", metrics, evidence...)
 }

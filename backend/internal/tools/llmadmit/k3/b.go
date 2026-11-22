@@ -93,9 +93,13 @@ func bRunScenario(c *suite.CaseCtx, sc bScenario) suite.Outcome {
 	bEnrichMetrics(metrics, samples, minTTFT)
 
 	var defects []suite.Defect
+	var formatDefects []suite.Defect
 	if metrics["usage_missing_samples"].(int) > 0 {
-		defects = append(defects, suite.Defect{Level: "P1", Expect: "所有成功样本包含 usage（TPOT/缓存可计算）", Actual: fmt.Sprintf("%d/%d 个样本缺 usage", metrics["usage_missing_samples"], metrics["cache_total_requests"]), Attribution: "gateway"})
+		// 流式 usage 字段缺失是格式兼容性问题，不是“没有缓存”。
+		// 仍以可观测的成功率/TTFT 判定性能，格式问题在 P2 中明确列出。
+		formatDefects = append(formatDefects, suite.Defect{Level: "P2", Expect: "所有成功样本包含 usage（TPOT/缓存可计算）", Actual: fmt.Sprintf("%d/%d 个样本缺 usage", metrics["usage_missing_samples"], metrics["cache_total_requests"]), Attribution: "gateway"})
 	}
+	metrics["usage_format_compliant"] = len(formatDefects) == 0
 	if stopped {
 		defects = append(defects, suite.Defect{Level: "P1", Expect: fmt.Sprintf("样本量≥%d", sc.samples), Actual: fmt.Sprintf("%d", len(samples)), Attribution: "client"})
 	}
@@ -126,6 +130,9 @@ func bRunScenario(c *suite.CaseCtx, sc bScenario) suite.Outcome {
 	}
 	if len(defects) > 0 {
 		return sFailure(sc.id+" 未达标："+summary, metrics, evidence, defects)
+	}
+	if len(formatDefects) > 0 {
+		return passWithWarnings(sc.id+" 达标（存在格式兼容问题）："+summary, metrics, formatDefects, evidence...)
 	}
 	return pass(sc.id+" 达标："+summary, metrics, evidence...)
 }

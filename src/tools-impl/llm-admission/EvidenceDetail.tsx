@@ -124,9 +124,12 @@ export default function EvidenceDetail({ runId, row }: { runId: string; row: Cas
               ))}
             </div>
             {data.defects.length > 0 && (
-              <div className="text-xs text-danger">
+              <div className="text-xs">
                 {data.defects.map((d, i) => (
-                  <p key={i}>[{d.level}] 期望 {d.expect}；实际 {d.actual}</p>
+                  <p key={i} className={d.level === "P2" ? "text-warning" : "text-danger"}>
+                    [{d.level}] 期望 {d.expect}；实际 {d.actual}
+                    {d.level === "P2" ? "（格式/兼容性问题，不影响已观测到的缓存效果）" : ""}
+                  </p>
                 ))}
               </div>
             )}

@@ -315,8 +315,9 @@ export default function RunDetailDrawer({
                   </div>
                   <div className="flex flex-col gap-1">
                     {cases.length === 0 && <p className="py-8 text-center text-sm text-default-400">没有匹配的用例</p>}
-                    {cases.map((row) => (
-                      <div key={row.id} className="rounded-medium border border-default-100">
+                    {cases.map((row) => {
+                      const hasFormatWarning = row.status === "passed" && Boolean(row.defects) && row.defects !== "[]";
+                      return <div key={row.id} className="rounded-medium border border-default-100">
                         <div
                           className="grid cursor-pointer grid-cols-[68px_76px_minmax(0,1fr)_auto] items-center gap-2 px-2 py-2 text-sm hover:bg-default-50 max-sm:grid-cols-[68px_minmax(0,1fr)_auto]"
                           onClick={() => setExpanded((prev) => {
@@ -331,6 +332,7 @@ export default function RunDetailDrawer({
                           <span className="min-w-0 truncate">{row.name}</span>
                           <div className="flex items-center gap-1">
                             <Chip size="sm" variant="bordered" color={row.level === "P0" ? "danger" : "default"} className="h-5 text-[10px]">{levelNote[row.level] ?? row.level}</Chip>
+                            {hasFormatWarning && <Chip size="sm" variant="flat" color="warning" className="h-5 text-[10px]">格式警告</Chip>}
                             {row.duration_ms > 0 && <span className="text-xs text-default-300">{Math.round(row.duration_ms / 1000)}s</span>}
                             <span className="text-xs text-default-400">{expanded.has(row.id) ? "▲" : "▼"}</span>
                           </div>
@@ -359,8 +361,8 @@ export default function RunDetailDrawer({
                             <EvidenceDetail runId={detail.run.id} row={row} />
                           </>
                         )}
-                      </div>
-                    ))}
+                      </div>;
+                    })}
                   </div>
                 </>
               )}

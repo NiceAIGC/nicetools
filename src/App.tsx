@@ -22,6 +22,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const showSearch = location.pathname === "/";
+  const wideTool = location.pathname === "/tools/llm-admission";
   const user = session?.user;
   const displayName = user?.display_name || user?.username || "账户";
   const initials = displayName.slice(0, 1).toUpperCase();
@@ -128,7 +129,7 @@ export default function App() {
       </Navbar>
 
       {showSearch && <div className="border-b border-default-200 bg-background px-4 py-3 lg:hidden"><div className="mx-auto max-w-6xl"><Input aria-label="搜索工具" placeholder="搜索工具、分类或标签" value={query} onValueChange={setQuery} isClearable onClear={() => setQuery("")} variant="flat" radius="full" startContent={<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="shrink-0 text-default-400"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>} /></div></div>}
-      <main className="mx-auto w-full max-w-6xl min-w-0 flex-1 overflow-x-hidden px-4 py-8 sm:px-6">
+      <main className={`mx-auto w-full ${wideTool ? "max-w-[1600px]" : "max-w-6xl"} min-w-0 flex-1 overflow-x-hidden px-4 py-8 sm:px-6`}>
         {error && <p role="alert" className="mb-4 rounded-medium bg-danger-50 px-4 py-3 text-sm text-danger">{error}</p>}
         <Suspense fallback={<div className="flex justify-center py-24"><Spinner label="加载中…" /></div>}>
           <Routes>

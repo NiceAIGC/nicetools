@@ -39,6 +39,25 @@ type Usage struct {
 	CacheWrite1h int `json:"cache_write_1h_tokens"`
 }
 
+func maxInt(values ...int) int {
+	best := 0
+	for _, v := range values {
+		if v > best {
+			best = v
+		}
+	}
+	return best
+}
+
+func firstPositive(values ...int) int {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -47,16 +66,35 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		InputTokens      int `json:"input_tokens"`
 		OutputTokens     int `json:"output_tokens"`
 		PromptDetails    struct {
-			CachedTokens     int `json:"cached_tokens"`
-			CacheWriteTokens int `json:"cache_write_tokens"`
+			CachedTokens       int `json:"cached_tokens"`
+			CacheWriteTokens   int `json:"cache_write_tokens"`
+			CreatedCacheTokens int `json:"created_cache_tokens"`
+			CacheWriteDetails  struct {
+				TTL5m int `json:"ttl_5m_tokens"`
+				TTL1h int `json:"ttl_1h_tokens"`
+			} `json:"cache_write_tokens_details"`
 		} `json:"prompt_tokens_details"`
 		InputDetails struct {
-			CachedTokens     int `json:"cached_tokens"`
-			CacheWriteTokens int `json:"cache_write_tokens"`
+			CachedTokens       int `json:"cached_tokens"`
+			CacheWriteTokens   int `json:"cache_write_tokens"`
+			CreatedCacheTokens int `json:"created_cache_tokens"`
+			CacheWriteDetails  struct {
+				TTL5m int `json:"ttl_5m_tokens"`
+				TTL1h int `json:"ttl_1h_tokens"`
+			} `json:"cache_write_tokens_details"`
 		} `json:"input_tokens_details"`
 		CompletionDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
+		CachedTokens       int `json:"cached_tokens"`
+		CacheReadTokens    int `json:"cache_read_tokens"`
+		CreatedCacheTokens int `json:"created_cache_tokens"`
+		CacheWriteTokens   int `json:"cache_write_tokens"`
+		CacheWrite1hTokens int `json:"cache_write_1h_tokens"`
+		CacheWriteDetails  struct {
+			TTL5m int `json:"ttl_5m_tokens"`
+			TTL1h int `json:"ttl_1h_tokens"`
+		} `json:"cache_write_tokens_details"`
 		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		CacheCreation            struct {
@@ -82,13 +120,17 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		u.CacheWrite5m = raw.CacheCreation.Ephemeral5m
 		u.CacheWrite1h = raw.CacheCreation.Ephemeral1h
 	case raw.PromptTokens > 0:
-		u.CachedTokens = raw.PromptDetails.CachedTokens
-		u.CacheWriteTokens = raw.PromptDetails.CacheWriteTokens
+		u.CachedTokens = firstPositive(raw.PromptDetails.CachedTokens, raw.CachedTokens, raw.CacheReadTokens)
+		u.CacheWriteTokens = maxInt(raw.PromptDetails.CacheWriteTokens, raw.PromptDetails.CreatedCacheTokens, raw.CacheWriteTokens, raw.CreatedCacheTokens)
+		u.CacheWrite5m = firstPositive(raw.PromptDetails.CacheWriteDetails.TTL5m, raw.CacheWriteDetails.TTL5m)
+		u.CacheWrite1h = firstPositive(raw.PromptDetails.CacheWriteDetails.TTL1h, raw.CacheWriteDetails.TTL1h, raw.CacheWrite1hTokens)
 	default:
 		// Responses: input_tokens 是总输入，明细在 input_tokens_details。
 		u.PromptTokens = raw.InputTokens
-		u.CachedTokens = raw.InputDetails.CachedTokens
-		u.CacheWriteTokens = raw.InputDetails.CacheWriteTokens
+		u.CachedTokens = firstPositive(raw.InputDetails.CachedTokens, raw.CachedTokens, raw.CacheReadTokens)
+		u.CacheWriteTokens = maxInt(raw.InputDetails.CacheWriteTokens, raw.InputDetails.CreatedCacheTokens, raw.CacheWriteTokens, raw.CreatedCacheTokens)
+		u.CacheWrite5m = firstPositive(raw.InputDetails.CacheWriteDetails.TTL5m, raw.CacheWriteDetails.TTL5m)
+		u.CacheWrite1h = firstPositive(raw.InputDetails.CacheWriteDetails.TTL1h, raw.CacheWriteDetails.TTL1h, raw.CacheWrite1hTokens)
 	}
 	if u.CompletionTokens == 0 {
 		u.CompletionTokens = raw.OutputTokens

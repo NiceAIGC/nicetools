@@ -16,6 +16,8 @@ func TestUsageParsesAllCacheFormats(t *testing.T) {
 	}{
 		{"chat write", `{"prompt_tokens":2132,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":2048}}`, 2132, 0, 2048, 0},
 		{"chat hit", `{"prompt_tokens":2132,"prompt_tokens_details":{"cached_tokens":2048}}`, 2132, 2048, 0, 0},
+		{"chat top-level write", `{"prompt_tokens":2132,"created_cache_tokens":2048,"cache_write_tokens":2048,"prompt_tokens_details":{"cached_tokens":0}}`, 2132, 0, 2048, 0},
+		{"chat top-level ttl", `{"prompt_tokens":2132,"cache_write_tokens":2048,"cache_write_tokens_details":{"ttl_5m_tokens":0,"ttl_1h_tokens":2048}}`, 2132, 0, 2048, 2048},
 		{"responses write", `{"input_tokens":2131,"output_tokens":16,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":2048}}`, 2131, 0, 2048, 0},
 		{"responses hit", `{"input_tokens":2131,"input_tokens_details":{"cached_tokens":2048}}`, 2131, 2048, 0, 0},
 		{"messages write 1h", `{"input_tokens":83,"output_tokens":8,"cache_creation_input_tokens":2048,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2048}}`, 2131, 0, 2048, 2048},
