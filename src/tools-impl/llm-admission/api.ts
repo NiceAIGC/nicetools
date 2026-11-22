@@ -60,6 +60,7 @@ export interface Run {
 
 export interface DomainGroup {
   domain: string;
+  note: string;
   name: string;
   hosts: string[];
   models: string[];
@@ -174,6 +175,8 @@ export function exportUrl(base: string, type: ExportType, format: ExportFormat, 
 export const listSuites = () => toolApi<SuiteInfo[]>(ID, "/suites");
 export const listRuns = () => toolApi<Run[]>(ID, "/runs");
 export const listDomainGroups = () => toolApi<{ groups: DomainGroup[] }>(ID, "/runs/domains");
+export const saveDomainNote = (domain: string, note: string) =>
+  toolApi<{ domain: string; note: string }>(ID, `/domains/${encodeURIComponent(domain)}/note`, json("PUT", { note }));
 export const runDetail = (id: string) => toolApi<{ run: Run; cases: CaseRow[] }>(ID, `/runs/${id}`);
 export const caseEvidence = (runId: string, caseId: string) => toolApi<CaseEvidence>(ID, `/runs/${runId}/cases/${encodeURIComponent(caseId)}/evidence`);
 export const createRun = (input: CreateInput) => toolApi<Run>(ID, "/runs", json("POST", input));

@@ -34,7 +34,7 @@ func New() *Module { return &Module{} }
 func (m *Module) ID() string { return "llm-admission" }
 
 func (m *Module) Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}, &CaseAttempt{}, &Setting{}); err != nil {
+	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}, &CaseAttempt{}, &Setting{}, &DomainNote{}); err != nil {
 		return err
 	}
 	return backfillPrimaryDomains(db)
@@ -66,6 +66,7 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	read.GET("/settings", m.getSettings)
 	write.PUT("/settings", m.putSettings)
 	pub.GET("/media/:token/:name", m.media)
+	write.PUT("/domains/:domain/note", m.putDomainNote)
 	write.POST("/runs", m.create)
 	write.POST("/runs/:rid/pause", func(c *gin.Context) { m.control(c, m.runner.Pause) })
 	write.POST("/runs/:rid/resume", func(c *gin.Context) { m.control(c, m.runner.Resume) })
@@ -252,6 +253,33 @@ func (m *Module) media(c *gin.Context) {
 		return
 	}
 	c.Data(200, "video/mp4", data)
+}
+
+// putDomainNote 保存或更新域名备注；空备注等价于清除展示前缀。
+func (m *Module) putDomainNote(c *gin.Context) {
+	domain := strings.TrimSpace(c.Param("domain"))
+	if domain == "" || len([]rune(domain)) > 255 {
+		module.Fail(c, service.Problem(400, "域名不合法"))
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		module.Fail(c, service.Problem(400, "备注格式错误"))
+		return
+	}
+	note := strings.TrimSpace(input.Note)
+	if len([]rune(note)) > 120 {
+		module.Fail(c, service.Problem(400, "备注不能超过 120 个字"))
+		return
+	}
+	row := DomainNote{Domain: domain}
+	if err := m.db.Where("domain = ?", domain).Assign(DomainNote{Note: note}).FirstOrCreate(&row).Error; err != nil {
+		module.Fail(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"domain": domain, "note": note})
 }
 
 func (m *Module) runDomains(c *gin.Context) {

@@ -64,6 +64,7 @@ func backfillPrimaryDomains(db *gorm.DB) error {
 
 type domainGroup struct {
 	Domain        string         `json:"domain"`
+	Note          string         `json:"note"`
 	Name          string         `json:"name"`
 	Hosts         []string       `json:"hosts"`
 	Models        []string       `json:"models"`
@@ -74,23 +75,6 @@ type domainGroup struct {
 	LastCompleted *Run           `json:"last_completed,omitempty"`
 	FailedByLevel map[string]int `json:"failed_by_level"`
 	Runs          []Run          `json:"runs"`
-}
-
-// domainRank 让活跃、未通过域名排在前面，其次是最近运行。
-func domainRank(g *domainGroup) int {
-	if g.ActiveCount > 0 {
-		return 0
-	}
-	if g.LastCompleted == nil {
-		return 4
-	}
-	if g.LastCompleted.Status == runFailed && g.LastCompleted.Verdict != "0 项未通过" {
-		return 1
-	}
-	if g.LastCompleted.Status == runSucceeded {
-		return 2
-	}
-	return 3
 }
 
 // annotateRuns 批量计算任务通过率/评级；只读取轻量列，避免把证据原文全部载入。
@@ -123,6 +107,14 @@ func (m *Module) runsByDomain() ([]domainGroup, error) {
 	if m.runner != nil {
 		m.runner.attachProgress(runs)
 	}
+	var notes []DomainNote
+	if err := m.db.Find(&notes).Error; err != nil {
+		return nil, err
+	}
+	noteByDomain := make(map[string]string, len(notes))
+	for _, note := range notes {
+		noteByDomain[note.Domain] = note.Note
+	}
 	groups := make(map[string]*domainGroup)
 	hostSeen := make(map[string]map[string]bool)
 	modelSeen := make(map[string]map[string]bool)
@@ -138,7 +130,7 @@ func (m *Module) runsByDomain() ([]domainGroup, error) {
 		}
 		g := groups[domain]
 		if g == nil {
-			g = &domainGroup{Domain: domain, FailedByLevel: map[string]int{}}
+			g = &domainGroup{Domain: domain, Note: noteByDomain[domain], FailedByLevel: map[string]int{}}
 			groups[domain] = g
 			hostSeen[domain] = map[string]bool{}
 			modelSeen[domain] = map[string]bool{}
@@ -193,13 +185,10 @@ func (m *Module) runsByDomain() ([]domainGroup, error) {
 				}
 			}
 		}
+		sort.Slice(g.Runs, func(i, j int) bool { return g.Runs[i].CreatedAt.After(g.Runs[j].CreatedAt) })
 		out = append(out, *g)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		ri, rj := domainRank(&out[i]), domainRank(&out[j])
-		if ri != rj {
-			return ri < rj
-		}
 		ti, tj := out[i].Runs[0].CreatedAt, out[j].Runs[0].CreatedAt
 		if out[i].Latest != nil {
 			ti = out[i].Latest.CreatedAt

@@ -9,7 +9,6 @@ import {
   DrawerContent,
   DrawerHeader,
   Input,
-  Progress,
   Select,
   SelectItem,
   Spinner,
@@ -154,17 +153,6 @@ export default function RunDetailDrawer({
   }, [detail, caseQuery, onlyFailed]);
 
   const failed = detail?.cases.filter((row) => row.status === "failed").length ?? 0;
-  const counts = useMemo(() => {
-    const by = { passed: 0, failed: 0, skipped: 0, exempt: 0 };
-    for (const row of detail?.cases ?? []) {
-      if (row.status === "passed") by.passed++;
-      else if (row.status === "failed") by.failed++;
-      else if (row.status === "skipped") by.skipped++;
-      else if (row.status === "exempt") by.exempt++;
-    }
-    return by;
-  }, [detail]);
-
   return (
     <Drawer isOpen={!!run} onOpenChange={(open) => { if (!open) onClose(); }} placement="right" size="5xl" scrollBehavior="inside" classNames={{ base: "w-full sm:max-w-6xl", body: "gap-4" }}>
       <DrawerContent>
@@ -178,7 +166,7 @@ export default function RunDetailDrawer({
                     <span className="break-all font-mono text-lg font-semibold sm:text-xl">{detail ? hostOf(detail.run.base_url) : "任务详情"}</span>
                     <span className="text-sm text-default-500">{detail?.run.model}</span>
                     {detail && <Chip size="sm" variant="flat" color={statusColor[detail.run.status]} className="h-5 text-[10px]">{statusLabel[detail.run.status]}</Chip>}
-                    {detail && <Chip size="sm" variant="flat" color={gradeColor(gradeOf(detail.run))} className="h-5 text-[10px]">评级 {gradeOf(detail.run)}{typeof detail.run.pass_rate === "number" ? ` · ${detail.run.pass_rate.toFixed(1)}%` : ""}</Chip>}
+                    {detail && <Chip size="sm" variant="flat" color={gradeColor(gradeOf(detail.run))} className="h-5 text-[10px]">评级 {gradeOf(detail.run)}</Chip>}
                   </div>
                   {detail && (
                     <p className="mt-1 text-xs text-default-400">
@@ -190,9 +178,6 @@ export default function RunDetailDrawer({
               </div>
               {detail && (
                 <div className="flex w-full flex-wrap items-center gap-2">
-                  {detail.run.verdict && (
-                    <span className={`text-sm font-medium ${detail.run.verdict.startsWith("0 项") ? "text-success" : "text-danger"}`}>{detail.run.verdict}</span>
-                  )}
                   {detail.run.status === "running" && <Button size="sm" variant="flat" color="warning" onPress={() => act(pauseRun, detail.run.id, "已请求暂停")}>暂停</Button>}
                   {["paused", "aborted"].includes(detail.run.status) && <Button size="sm" color="primary" variant="flat" onPress={() => act(resumeRun, detail.run.id, "已继续")}>继续跑</Button>}
                   {["queued", "running", "pausing", "paused"].includes(detail.run.status) && (
@@ -215,36 +200,8 @@ export default function RunDetailDrawer({
               {error && <p className="rounded-medium bg-danger/10 p-3 text-sm text-danger">{error}</p>}
               {detail && (
                 <>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {[
-                      { label: "通过率", value: typeof detail.run.pass_rate === "number" ? `${detail.run.pass_rate.toFixed(1)}%` : "—", note: `评级 ${gradeOf(detail.run)}` },
-                      { label: "通过", value: counts.passed, note: `考核 ${detail.run.assessed ?? counts.passed + counts.failed} 项` },
-                      { label: "失败", value: counts.failed, note: "P0/P1 需处理" },
-                      { label: "跳过/豁免", value: counts.skipped + counts.exempt, note: "不计通过率" },
-                    ].map((item) => (
-                      <div key={item.label} className="rounded-medium border border-default-200 px-3 py-2">
-                        <p className="text-xs text-default-400">{item.label}</p>
-                        <p className="mt-0.5 text-lg font-semibold tabular-nums">{item.value}</p>
-                        <p className="text-[11px] text-default-400">{item.note}</p>
-                      </div>
-                    ))}
-                  </div>
-                  {detail.run.progress && (
-                    <div className="rounded-medium border border-primary/20 bg-primary/5 px-3 py-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <span className="font-medium text-default-700">当前：{detail.run.progress.case_id} {detail.run.progress.case_name}</span>
-                        <span className="text-default-500">
-                          {detail.run.progress.step || ""}
-                          {detail.run.progress.total > 0 ? ` · ${detail.run.progress.done}/${detail.run.progress.total}` : ""}
-                          {` · 请求 ${detail.run.progress.requests}`}
-                        </span>
-                      </div>
-                      <Progress className="mt-2" size="sm" value={detail.run.progress.total ? (detail.run.progress.done / detail.run.progress.total) * 100 : 0} />
-                    </div>
-                  )}
-                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                    <Progress size="sm" value={detail.run.total_cases ? (detail.run.done_cases / detail.run.total_cases) * 100 : 0} label={`进度 ${detail.run.done_cases}/${detail.run.total_cases} 项`} />
-                    <details className="rounded-medium border border-default-200 px-3 py-2">
+                  <div className="flex justify-end">
+                    <details className="w-full rounded-medium border border-default-200 px-3 py-2 sm:w-auto">
                       <summary className="cursor-pointer text-sm font-medium text-primary">导出报告</summary>
                       <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-[110px_100px_90px_90px_auto]">
                         <Select aria-label="内容" size="sm" selectedKeys={[exportDetail]} onChange={(e) => setExportDetail(e.target.value as ExportDetail)}>

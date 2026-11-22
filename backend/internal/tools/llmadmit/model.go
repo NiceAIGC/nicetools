@@ -59,6 +59,15 @@ type Run struct {
 
 func (Run) TableName() string { return "tool_llmadmit_runs" }
 
+// DomainNote 是域名级备注；与 Run 解耦，修改备注不影响历史任务。
+type DomainNote struct {
+	Domain    string    `gorm:"primaryKey" json:"domain"`
+	Note      string    `json:"note"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (DomainNote) TableName() string { return "tool_llmadmit_domain_notes" }
+
 // CaseResult 是单用例执行留档；Evidence 保留请求/响应原文（截断 256KB）+ SHA256。
 type CaseResult struct {
 	ID     uint   `gorm:"primaryKey" json:"id"`
