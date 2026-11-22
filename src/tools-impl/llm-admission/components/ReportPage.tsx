@@ -171,7 +171,11 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
     }
   };
 
-  const pickDomain = (domain: string) => setSelectedDomain(domain);
+  const pickDomain = (domain: string) => {
+    setSelectedDomain(domain);
+    setEditingDomain("");
+    setNoteDraft("");
+  };
 
   const beginNote = (group: DomainGroup) => {
     setEditingDomain(group.domain);
@@ -260,34 +264,12 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                   <div className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold" title={title}>{title}</span>
                     {latest?.grade && <Chip size="sm" variant="flat" color={gradeColor(latest.grade)} className="h-5 text-[10px]">{latest.grade}</Chip>}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); beginNote(group); }}
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-primary hover:bg-primary/10"
-                    >
-                      {group.note ? "改备注" : "备注"}
-                    </button>
                   </div>
                   <p className="mt-1 truncate text-xs text-default-500">{group.name || "未命名"} · {group.models.join(" / ")}</p>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-default-400">
                     <span>{group.run_count} 个任务</span>
                     <span>{displayTime(latest?.created_at || "")}</span>
                   </div>
-                  {editingDomain === group.domain && (
-                    <div className="mt-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                      <Input
-                        size="sm"
-                        autoFocus
-                        maxLength={120}
-                        placeholder="备注，例如：供应商A"
-                        value={noteDraft}
-                        onValueChange={setNoteDraft}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveNote(group.domain); } }}
-                      />
-                      <Button size="sm" color="primary" isLoading={savingNote} onPress={() => void saveNote(group.domain)}>保存</Button>
-                      <Button size="sm" variant="light" onPress={() => setEditingDomain("")}>取消</Button>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -320,9 +302,27 @@ export default function ReportPage({ suites, onStats }: { suites: SuiteInfo[]; o
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-1">
+                  <Button size="sm" variant="flat" onPress={() => beginNote(selectedGroup)}>{selectedGroup.note ? "改备注" : "设置备注"}</Button>
                   {selectedLatest && <Button size="sm" variant="flat" onPress={() => setDetail(selectedLatest)}>打开最近报告</Button>}
                 </div>
               </div>
+
+              {editingDomain === selectedGroup.domain && (
+                <div className="flex flex-wrap items-center gap-2 rounded-medium border border-default-200 bg-default-50/60 p-2">
+                  <Input
+                    size="sm"
+                    autoFocus
+                    maxLength={120}
+                    className="min-w-[220px] flex-1"
+                    placeholder="输入备注，留空保存即可清除；显示为 备注-域名"
+                    value={noteDraft}
+                    onValueChange={setNoteDraft}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveNote(selectedGroup.domain); } }}
+                  />
+                  <Button size="sm" color="primary" isLoading={savingNote} onPress={() => void saveNote(selectedGroup.domain)}>保存</Button>
+                  <Button size="sm" variant="light" onPress={() => setEditingDomain("")}>取消</Button>
+                </div>
+              )}
 
               <div className="flex items-end justify-between gap-2 border-b border-default-200 pb-2">
                 <div>

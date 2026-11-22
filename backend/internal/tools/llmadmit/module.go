@@ -5,6 +5,7 @@ package llmadmit
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/url"
 	"strconv"
@@ -274,8 +275,22 @@ func (m *Module) putDomainNote(c *gin.Context) {
 		module.Fail(c, service.Problem(400, "备注不能超过 120 个字"))
 		return
 	}
-	row := DomainNote{Domain: domain}
-	if err := m.db.Where("domain = ?", domain).Assign(DomainNote{Note: note}).FirstOrCreate(&row).Error; err != nil {
+	var row DomainNote
+	err := m.db.Where("domain = ?", domain).First(&row).Error
+	switch {
+	case err == nil:
+		// Update 显式写列，空字符串也必须落库，不能用 FirstOrCreate+Assign
+		// 的零值更新（会跳过空备注）。
+		if err := m.db.Model(&DomainNote{}).Where("domain = ?", domain).Update("note", note).Error; err != nil {
+			module.Fail(c, err)
+			return
+		}
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		if err := m.db.Create(&DomainNote{Domain: domain, Note: note}).Error; err != nil {
+			module.Fail(c, err)
+			return
+		}
+	default:
 		module.Fail(c, err)
 		return
 	}
