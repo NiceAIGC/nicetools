@@ -34,7 +34,7 @@ func New() *Module { return &Module{} }
 func (m *Module) ID() string { return "llm-admission" }
 
 func (m *Module) Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}, &CaseAttempt{}); err != nil {
+	if err := db.AutoMigrate(&Run{}, &CaseResult{}, &CaseCfg{}, &CaseAttempt{}, &Setting{}); err != nil {
 		return err
 	}
 	return backfillPrimaryDomains(db)
@@ -43,6 +43,9 @@ func (m *Module) Migrate(db *gorm.DB) error {
 func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	m.db = d.DB
 	m.runner = NewRunner(d.DB, d.Service, Suites(), d.Config.PublicOrigin)
+	if n := m.readConcurrency(); n > 0 {
+		m.runner.SetConcurrency(n)
+	}
 	// 重启恢复：中断任务标记 aborted，已完成用例留档不丢。
 	if err := m.runner.Recover(); err != nil {
 		panic(err)
@@ -60,6 +63,8 @@ func (m *Module) Register(read, write, pub *gin.RouterGroup, d module.Deps) {
 	read.GET("/export/merged", m.exportMerged)
 	read.GET("/config", m.getConfig)
 	write.PUT("/config", m.putConfig)
+	read.GET("/settings", m.getSettings)
+	write.PUT("/settings", m.putSettings)
 	pub.GET("/media/:token/:name", m.media)
 	write.POST("/runs", m.create)
 	write.POST("/runs/:rid/pause", func(c *gin.Context) { m.control(c, m.runner.Pause) })
@@ -80,6 +85,49 @@ func (m *Module) requireAdminUser(c *gin.Context) bool {
 		return false
 	}
 	return true
+}
+
+func (m *Module) readConcurrency() int {
+	var setting Setting
+	if err := m.db.First(&setting, "key = ?", "max_concurrent").Error; err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(setting.Value)
+	if err != nil || n < 1 || n > 16 {
+		return 0
+	}
+	return n
+}
+
+func (m *Module) getSettings(c *gin.Context) {
+	if !m.requireAdminUser(c) {
+		return
+	}
+	n := m.readConcurrency()
+	if n == 0 {
+		n = 2
+	}
+	c.JSON(200, gin.H{"max_concurrent": n})
+}
+
+func (m *Module) putSettings(c *gin.Context) {
+	if !m.requireAdminUser(c) {
+		return
+	}
+	var input struct {
+		MaxConcurrent int `json:"max_concurrent"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.MaxConcurrent < 1 || input.MaxConcurrent > 16 {
+		module.Fail(c, service.Problem(400, "最大并行任务数须为 1–16"))
+		return
+	}
+	value := strconv.Itoa(input.MaxConcurrent)
+	if err := m.db.Save(&Setting{Key: "max_concurrent", Value: value}).Error; err != nil {
+		module.Fail(c, service.DBError(err))
+		return
+	}
+	m.runner.SetConcurrency(input.MaxConcurrent)
+	c.JSON(200, gin.H{"max_concurrent": input.MaxConcurrent})
 }
 
 // getConfig 返回全部用例永久配置（管理员级默认）。

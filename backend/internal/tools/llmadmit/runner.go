@@ -32,20 +32,25 @@ const (
 var errControlStop = errors.New("run interrupted by control")
 
 // Runner 是全局单飞的异步执行器：同一时间只允许一个活跃任务。
+type activeRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type Runner struct {
 	db     *gorm.DB
 	svc    *service.Service
 	suites map[string]suite.Suite
 	origin string // 公网地址（媒体托管 URL 用），空则降级
 
-	// slot 容量 1：同一时间只执行一个任务；其余任务在 queued 状态排队。
-	slot       chan struct{}
-	mu         sync.Mutex
-	cancel     context.CancelFunc
-	done       chan struct{}
-	activeID   string
-	progressMu sync.Mutex
-	progress   map[string]*RunProgress
+	slots       chan struct{} // 固定容量 16；实际并行数由 concurrency 控制
+	concurrency int
+	running     int
+	dispatchMu  sync.Mutex
+	mu          sync.Mutex
+	active      map[string]activeRun
+	progressMu  sync.Mutex
+	progress    map[string]*RunProgress
 }
 
 func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOrigin string) *Runner {
@@ -53,7 +58,7 @@ func NewRunner(db *gorm.DB, svc *service.Service, suites []suite.Suite, publicOr
 	for _, s := range suites {
 		byID[s.ID] = s
 	}
-	return &Runner{db: db, svc: svc, suites: byID, origin: publicOrigin, slot: make(chan struct{}, 1), progress: map[string]*RunProgress{}}
+	return &Runner{db: db, svc: svc, suites: byID, origin: publicOrigin, slots: make(chan struct{}, 16), concurrency: 2, active: map[string]activeRun{}, progress: map[string]*RunProgress{}}
 }
 
 // Recover 在服务重启后把中断的任务标记为 aborted（已完成用例留档不丢）。
@@ -275,13 +280,13 @@ func (r *Runner) launch(runID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	r.mu.Lock()
-	r.cancel, r.done, r.activeID = cancel, done, runID
+	r.active[runID] = activeRun{cancel: cancel, done: done}
 	r.mu.Unlock()
 	go func() {
 		defer func() {
 			r.mu.Lock()
-			if r.activeID == runID {
-				r.activeID = ""
+			if current, ok := r.active[runID]; ok && current.done == done {
+				delete(r.active, runID)
 			}
 			r.mu.Unlock()
 			close(done)
@@ -290,26 +295,62 @@ func (r *Runner) launch(runID string) {
 	}()
 }
 
+func (r *Runner) tryAcquire() bool {
+	r.mu.Lock()
+	if r.running >= r.concurrency {
+		r.mu.Unlock()
+		return false
+	}
+	r.running++
+	r.mu.Unlock()
+	r.slots <- struct{}{}
+	return true
+}
+
+func (r *Runner) releaseSlot() {
+	<-r.slots
+	r.mu.Lock()
+	if r.running > 0 {
+		r.running--
+	}
+	r.mu.Unlock()
+}
+
+// SetConcurrency 动态调整最大并行任务数；不打断正在运行的任务。
+func (r *Runner) SetConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 16 {
+		n = 16
+	}
+	r.mu.Lock()
+	r.concurrency = n
+	r.mu.Unlock()
+	r.dispatch()
+}
+
 // dispatch 从 queued 队列取最早任务启动；并发容量固定为 1。
 func (r *Runner) dispatch() {
-	select {
-	case r.slot <- struct{}{}:
-	default:
-		return
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
+	for {
+		if !r.tryAcquire() {
+			return
+		}
+		var run Run
+		if err := r.db.Where("status = ?", runQueued).Order("created_at ASC, id ASC").First(&run).Error; err != nil {
+			r.releaseSlot()
+			return
+		}
+		now := time.Now()
+		if err := r.db.Model(&Run{}).Where("id = ? AND status = ?", run.ID, runQueued).
+			Updates(map[string]any{"status": runRunning, "started_at": &now}).Error; err != nil {
+			r.releaseSlot()
+			return
+		}
+		r.launch(run.ID)
 	}
-	// 暂停任务已经释放执行槽，不再阻塞 queued；槽位本身保证同一时间只跑一个任务。
-	var run Run
-	if err := r.db.Where("status = ?", runQueued).Order("created_at ASC, id ASC").First(&run).Error; err != nil {
-		<-r.slot
-		return
-	}
-	now := time.Now()
-	if err := r.db.Model(&Run{}).Where("id = ? AND status = ?", run.ID, runQueued).
-		Updates(map[string]any{"status": runRunning, "started_at": &now}).Error; err != nil {
-		<-r.slot
-		return
-	}
-	r.launch(run.ID)
 }
 
 // Pause 请求暂停：在用例边界生效（长用例内部循环也会检查）。
@@ -320,10 +361,10 @@ func (r *Runner) Pause(id string) error {
 	}
 	// 暂停时立即取消当前请求，避免长 HTTP/30 分钟超时让任务长时间停在 pausing。
 	r.mu.Lock()
-	activeID, cancel := r.activeID, r.cancel
+	active, ok := r.active[id]
 	r.mu.Unlock()
-	if activeID == id && cancel != nil {
-		cancel()
+	if ok && active.cancel != nil {
+		active.cancel()
 	}
 	return nil
 }
@@ -351,17 +392,15 @@ func (r *Runner) Abort(id string, actor string) error {
 		return service.Problem(409, "任务已结束")
 	}
 	r.mu.Lock()
-	// 只有终止“当前真正在跑”的任务时才取消循环；终止 queued/paused 任务
-	// 绝不能误伤另一个正在运行的任务，否则会留下永远 running 的僵尸状态。
-	active := r.activeID == id
-	cancel, done := r.cancel, r.done
+	// 只取消目标任务的循环；终止 queued/paused 任务不能误伤其他并行任务。
+	ar, isActive := r.active[id]
 	r.mu.Unlock()
-	if active && cancel != nil {
-		cancel()
+	if isActive && ar.cancel != nil {
+		ar.cancel()
 	}
-	if active && done != nil {
+	if isActive && ar.done != nil {
 		select {
-		case <-done:
+		case <-ar.done:
 		case <-time.After(30 * time.Second):
 		}
 	}
@@ -407,7 +446,7 @@ func (r *Runner) control(ctx context.Context, runID string) func() error {
 func (r *Runner) loop(ctx context.Context, runID string) {
 	defer func() {
 		r.clearProgress(runID)
-		<-r.slot
+		r.releaseSlot()
 		r.dispatch()
 	}()
 	run, err := r.loadRun(runID)
@@ -473,9 +512,12 @@ func (r *Runner) markPaused(runID string) {
 // 标成中断，修复历史上误终止 queued 任务导致的状态残留。
 func (r *Runner) ReconcileStale() {
 	r.mu.Lock()
-	active := r.activeID
+	active := make(map[string]bool, len(r.active))
+	for id := range r.active {
+		active[id] = true
+	}
 	r.mu.Unlock()
-	if active == "" {
+	if len(active) == 0 {
 		return
 	}
 	var runs []Run
@@ -484,7 +526,7 @@ func (r *Runner) ReconcileStale() {
 	}
 	now := time.Now()
 	for _, run := range runs {
-		if run.ID == active {
+		if active[run.ID] {
 			continue
 		}
 		r.db.Model(&Run{}).Where("id = ? AND status IN ?", run.ID, []string{runRunning, runPausing}).

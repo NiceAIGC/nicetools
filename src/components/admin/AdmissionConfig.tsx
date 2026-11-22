@@ -51,6 +51,8 @@ interface CaseCfg {
 const listSuites = () => toolApi<SuiteInfo[]>(TOOL, "/suites");
 const listCaseCfg = () => toolApi<CaseCfg[]>(TOOL, "/config");
 const saveCaseCfg = (suite: string, cfgs: CaseCfg[]) => toolApi(TOOL, "/config", json("PUT", { suite, cfgs }));
+const getSettings = () => toolApi<{ max_concurrent: number }>(TOOL, "/settings");
+const saveSettings = (maxConcurrent: number) => toolApi<{ max_concurrent: number }>(TOOL, "/settings", json("PUT", { max_concurrent: maxConcurrent }));
 
 // 准入测试用例永久配置（管理员级默认）：级别改写 + 默认测试/不测。
 // 任务创建时的自定义优先级高于这里（规范 §6 三层模型）。
@@ -59,14 +61,17 @@ export default function AdmissionConfig() {
   const [cfg, setCfg] = useState<Record<string, CaseCfg>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [maxConcurrent, setMaxConcurrent] = useState(2);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [bulkLevel, setBulkLevel] = useState("");
 
   useEffect(() => {
-    Promise.all([listSuites(), listCaseCfg()])
-      .then(([suites, cfgs]) => {
+    Promise.all([listSuites(), listCaseCfg(), getSettings()])
+      .then(([suites, cfgs, settings]) => {
         setSuite(suites[0] ?? null);
+        setMaxConcurrent(settings.max_concurrent);
         setSelected(new Set());
         const map: Record<string, CaseCfg> = {};
         for (const item of cfgs) {
@@ -112,6 +117,18 @@ export default function AdmissionConfig() {
 
   const allIDs = suite?.cases.map((c) => c.id) ?? [];
 
+  const saveConcurrency = async () => {
+    setSavingSettings(true);
+    try {
+      await saveSettings(maxConcurrent);
+      addToast({ title: `最大并行任务数已设为 ${maxConcurrent}` });
+    } catch (e) {
+      addToast({ title: (e as Error).message, color: "danger" });
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   const save = async () => {
     if (!suite) return;
     setSaving(true);
@@ -134,6 +151,25 @@ export default function AdmissionConfig() {
 
   return (
     <div className="flex flex-col gap-4">
+      <Card shadow="none" className="border border-default-200">
+        <CardBody className="flex flex-row flex-wrap items-end gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">后台并行任务数</p>
+            <p className="mt-1 text-xs text-default-400">默认 2，范围 1–16；保存后立即生效，不打断正在运行的任务。</p>
+          </div>
+          <Input
+            aria-label="最大并行任务数"
+            type="number"
+            min={1}
+            max={16}
+            size="sm"
+            className="w-28"
+            value={String(maxConcurrent)}
+            onValueChange={(v) => setMaxConcurrent(Math.max(1, Math.min(16, Number(v) || 1)))}
+          />
+          <Button size="sm" color="primary" variant="flat" isLoading={savingSettings} onPress={saveConcurrency}>保存</Button>
+        </CardBody>
+      </Card>
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-default-500">{suite.name} · 已配置 {dirtyCount} 项 · 任务级自定义优先于此处默认值</p>
         <Button color="primary" size="sm" className="ml-auto" isLoading={saving} onPress={save}>

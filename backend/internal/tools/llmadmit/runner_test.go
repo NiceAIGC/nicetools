@@ -348,6 +348,7 @@ func TestRunnerAbortQueuedDoesNotCancelActive(t *testing.T) {
 	server := fakeGateway(180 * time.Millisecond)
 	defer server.Close()
 	r, _ := setupRunner(t)
+	r.SetConcurrency(1)
 	target := suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}
 	first, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
 	if err != nil {

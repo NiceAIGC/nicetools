@@ -100,11 +100,13 @@ func (r *Runner) StartCaseRecheck(runID, caseID string, includeGates bool) (Case
 }
 
 func (r *Runner) runCaseAttempt(runID, caseID string, target suite.Case, attemptID uint, includeGates bool) {
-	// 复用单飞槽：复测不会和完整任务同时压被测网关。
-	r.slot <- struct{}{}
+	// 复用并行槽：复测与完整任务共享后台设置的最大并行数。
+	for !r.tryAcquire() {
+		time.Sleep(200 * time.Millisecond)
+	}
 	defer func() {
 		r.clearProgress(runID)
-		<-r.slot
+		r.releaseSlot()
 		r.dispatch()
 	}()
 

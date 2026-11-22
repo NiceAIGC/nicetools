@@ -111,6 +111,14 @@ type CaseAttempt struct {
 
 func (CaseAttempt) TableName() string { return "tool_llmadmit_attempts" }
 
+// Setting 保存工具级运行配置，目前用于最大并行任务数。
+type Setting struct {
+	Key   string `gorm:"primaryKey" json:"key"`
+	Value string `json:"value"`
+}
+
+func (Setting) TableName() string { return "tool_llmadmit_settings" }
+
 // CaseCfg 是管理员级用例永久配置（规范 §6 第三层）：
 // mode=skip/exempt 给所有新任务的默认值；level 非空时覆盖用例级别（P0/P1/P2/P3）。
 type CaseCfg struct {
