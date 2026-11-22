@@ -375,6 +375,37 @@ func TestRunnerAbortQueuedDoesNotCancelActive(t *testing.T) {
 	}
 }
 
+// 并行上限：并发设为 2 时，两个任务可同时启动，第三个继续排队。
+func TestRunnerParallelLimit(t *testing.T) {
+	server := fakeGateway(160 * time.Millisecond)
+	defer server.Close()
+	r, _ := setupRunner(t)
+	r.SetConcurrency(2)
+	target := suite.Target{BaseURL: server.URL, APIKey: "sk-test", Model: "kimi-k3"}
+	first, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := r.Start("tester", fixtureSuite(), target, suite.PresetFormat, "", map[string]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 前两个进入 running，第三个仍 queued。
+	waitStatus(t, r, first.ID, 10*time.Second, runRunning)
+	waitStatus(t, r, second.ID, 10*time.Second, runRunning)
+	gotThird, _ := r.loadRun(third.ID)
+	if gotThird.Status != runQueued {
+		t.Fatalf("third status=%s want queued while two running", gotThird.Status)
+	}
+	waitStatus(t, r, first.ID, 60*time.Second, runSucceeded, runFailed)
+	waitStatus(t, r, second.ID, 60*time.Second, runSucceeded, runFailed)
+	waitStatus(t, r, third.ID, 60*time.Second, runSucceeded, runFailed)
+}
+
 // 暂停任务不占用执行槽：后续 queued 任务应能自动开始，而不是等暂停任务“继续”。
 func TestRunnerPausedDoesNotBlockQueue(t *testing.T) {
 	server := fakeGateway(120 * time.Millisecond)
