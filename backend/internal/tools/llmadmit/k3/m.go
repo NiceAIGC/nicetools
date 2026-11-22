@@ -900,7 +900,7 @@ func m50Latency10k(c *suite.CaseCtx) suite.Outcome {
 	if err != nil {
 		return fail("输入构造失败: "+err.Error(), nil)
 	}
-	body := map[string]any{"messages": userMsg(prompt + "\n请用一句话总结。"), "max_tokens": 512, "stream": true}
+	body := map[string]any{"messages": userMsg(prompt + "\n请用一句话总结。"), "max_tokens": 512, "stream": true, "stream_options": map[string]any{"include_usage": true}}
 	r, retries := chatTimeout(c, body, suite.TimeoutLarge)
 	e := ev("10k 输入", body, r, retries)
 	tpot := 0.0

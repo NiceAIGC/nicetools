@@ -70,6 +70,7 @@ func bRunScenario(c *suite.CaseCtx, sc bScenario) suite.Outcome {
 	samples, stopped := sRequests(c, sc.concurrency, sc.samples, func(i int) (string, map[string]any) {
 		body := map[string]any{
 			"messages": userMsg(prompt + "\n请直接回答：OK"), "max_tokens": benchmarkMaxTokens, "stream": true,
+			"stream_options": map[string]any{"include_usage": true},
 		}
 		return fmt.Sprintf("%s 样本 %d", sc.id, i+1), body
 	})
@@ -92,6 +93,9 @@ func bRunScenario(c *suite.CaseCtx, sc bScenario) suite.Outcome {
 	bEnrichMetrics(metrics, samples, minTTFT)
 
 	var defects []suite.Defect
+	if metrics["usage_missing_samples"].(int) > 0 {
+		defects = append(defects, suite.Defect{Level: "P1", Expect: "所有成功样本包含 usage（TPOT/缓存可计算）", Actual: fmt.Sprintf("%d/%d 个样本缺 usage", metrics["usage_missing_samples"], metrics["cache_total_requests"]), Attribution: "gateway"})
+	}
 	if stopped {
 		defects = append(defects, suite.Defect{Level: "P1", Expect: fmt.Sprintf("样本量≥%d", sc.samples), Actual: fmt.Sprintf("%d", len(samples)), Attribution: "client"})
 	}
@@ -113,8 +117,13 @@ func bRunScenario(c *suite.CaseCtx, sc bScenario) suite.Outcome {
 	if metrics["e2e_p90_ms"].(float64) > sc.e2eP90 {
 		defects = append(defects, suite.Defect{Level: "P1", Expect: fmt.Sprintf("E2E P90≤%.0fms", sc.e2eP90), Actual: fmt.Sprintf("%.0fms", metrics["e2e_p90_ms"]), Attribution: "upstream"})
 	}
+	usageMissing := metrics["usage_missing_samples"].(int)
 	summary := fmt.Sprintf("%s：成功率 %.1f%% TTFT P50 %.0fms TPOT P50 %.1fms 缓存命中 %.1f%%",
 		sc.label, successRate, metrics["ttft_p50_ms"], metrics["tpot_p50_ms"], metrics["cache_hit_rate_percent"])
+	if usageMissing > 0 {
+		summary = fmt.Sprintf("%s：success %.1f%% TTFT P50 %.0fms，usage 未采集（%d/%d），TPOT/缓存不可用",
+			sc.label, successRate, metrics["ttft_p50_ms"], usageMissing, metrics["cache_total_requests"])
+	}
 	if len(defects) > 0 {
 		return sFailure(sc.id+" 未达标："+summary, metrics, evidence, defects)
 	}
@@ -129,7 +138,7 @@ func bMinLatency(c *suite.CaseCtx) float64 {
 		if sControlled(c) {
 			break
 		}
-		body := map[string]any{"messages": userMsg("Hi"), "max_tokens": 8, "stream": true}
+		body := map[string]any{"messages": userMsg("Hi"), "max_tokens": 8, "stream": true, "stream_options": map[string]any{"include_usage": true}}
 		r, _ := chat(c, body)
 		if r.HTTPStatus == 200 && r.ErrKind == "" && r.TTFTMs > 0 {
 			values = append(values, float64(r.TTFTMs))
@@ -149,6 +158,7 @@ func bEnrichMetrics(metrics map[string]any, samples []sSample, minLatency float6
 	http200, stop, length, okCount := 0, 0, 0, 0
 	promptTokens, cachedTokens, outputTokens := 0, 0, 0
 	cacheHitRequests := 0
+	usageCount := 0
 	scatter := make([]float64, 0, len(samples))
 
 	for _, sample := range samples {
@@ -185,6 +195,7 @@ func bEnrichMetrics(metrics map[string]any, samples []sSample, minLatency float6
 		if r.Usage == nil {
 			continue
 		}
+		usageCount++
 		promptTokens += r.Usage.PromptTokens
 		cachedTokens += r.Usage.CachedTokens
 		outputTokens += r.Usage.CompletionTokens
@@ -245,6 +256,9 @@ func bEnrichMetrics(metrics map[string]any, samples []sSample, minLatency float6
 	metrics["cache_coverage_percent"] = sRate(cacheHitRequests, okCount)
 	metrics["cache_hit_requests"] = cacheHitRequests
 	metrics["cache_total_requests"] = okCount
+	metrics["usage_samples"] = usageCount
+	metrics["usage_missing_samples"] = okCount - usageCount
+	metrics["usage_complete"] = usageCount == okCount && okCount > 0
 	if okCount > 0 {
 		metrics["input_tokens_per_request"] = float64(promptTokens) / float64(okCount)
 		metrics["output_tokens_per_request"] = float64(outputTokens) / float64(okCount)
